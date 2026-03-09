@@ -1,0 +1,274 @@
+# Report Contract v1.0 — governed sections, metrics, and dataset inputs.
+# Narrative generation must reference only defined placeholders and computed metrics.
+
+version: "1.0"
+
+sections:
+  - id: overview_firm
+    required_metrics:
+      - firm_end_aum
+      - firm_mom_pct
+      - firm_ytd_pct
+      - firm_nnb
+      - firm_ogr
+      - firm_market_impact_abs
+      - firm_market_impact_rate
+      - firm_fee_yield
+    required_dimensions: []
+    output_fields:
+      - end_aum
+      - mom_pct
+      - ytd_pct
+      - nnb
+      - ogr
+      - market_impact_abs
+      - market_impact_rate
+      - fee_yield
+      - period_label
+
+  - id: channel_commentary
+    required_metrics:
+      - firm_end_aum
+      - firm_nnb
+      - movers_top_bottom
+      - mix_shift_share_delta
+    required_dimensions:
+      - channel
+    output_fields:
+      - channel
+      - end_aum
+      - nnb
+      - share
+      - share_delta
+      - rank
+      - movers_list
+
+  - id: product_etf_commentary
+    required_metrics:
+      - firm_end_aum
+      - firm_nnb
+      - movers_top_bottom
+      - mix_shift_share_delta
+    required_dimensions:
+      - ticker
+    output_fields:
+      - ticker
+      - end_aum
+      - nnb
+      - share
+      - share_delta
+      - rank
+      - movers_list
+      - etf_flag
+
+  - id: geo_commentary
+    required_metrics:
+      - firm_end_aum
+      - firm_nnb
+      - movers_top_bottom
+      - mix_shift_share_delta
+    required_dimensions:
+      - geo
+    output_fields:
+      - geo_country
+      - end_aum
+      - nnb
+      - share
+      - share_delta
+      - rank
+      - movers_list
+
+  - id: anomalies_summary
+    required_metrics:
+      - anomalies_zscore
+      - anomalies_rolling_std
+      - reversals
+    required_dimensions: []
+    output_fields:
+      - zscore_flag
+      - rolling_std_flag
+      - reversals_list
+      - anomaly_count
+
+  - id: recommendations
+    required_metrics:
+      - firm_nnb
+      - firm_ogr
+      - firm_fee_yield
+      - mix_shift_share_delta
+    required_dimensions: []
+    output_fields:
+      - focus_channel
+      - focus_ticker
+      - focus_geo
+      - action_summary
+
+inputs:
+  required_datasets:
+    - fact_monthly
+    - mappings
+    - etf_map
+  required_columns:
+    - month_end
+    - standard_channel
+    - product_ticker
+    - geo_country
+    - begin_aum
+    - end_aum
+    - nnb
+    - nnf
+    - market_pnl
+    - AUM
+    - NNB
+    - NNF
+  grain: "monthly"
+
+metrics:
+  firm_end_aum:
+    description: "Period-end AUM at firm level"
+    formula: "sum(end_aum) at last month_end"
+    unit: "currency"
+
+  firm_mom_pct:
+    description: "Firm MoM AUM growth percent"
+    formula: "(end_aum - prior_end_aum) / prior_end_aum * 100"
+    unit: "percent"
+
+  firm_ytd_pct:
+    description: "Firm YTD AUM growth percent"
+    formula: "(end_aum - ytd_start_aum) / ytd_start_aum * 100"
+    unit: "percent"
+
+  firm_nnb:
+    description: "Firm net new business"
+    formula: "sum(nnb)"
+    unit: "currency"
+
+  firm_ogr:
+    description: "Firm organic growth rate"
+    formula: "nnb / begin_aum"
+    unit: "rate"
+
+  firm_market_impact_abs:
+    description: "Firm market impact (absolute)"
+    formula: "end_aum - begin_aum - nnb"
+    unit: "currency"
+
+  firm_market_impact_rate:
+    description: "Firm market impact rate"
+    formula: "market_impact_abs / begin_aum"
+    unit: "rate"
+
+  firm_fee_yield:
+    description: "Firm fee yield"
+    formula: "nnf / avg_aum"
+    unit: "rate"
+
+  movers_top_bottom:
+    description: "Top/bottom movers by dimension and metric"
+    parameterized:
+      dimension: "channel | ticker | geo"
+      metric: "nnb | end_aum | share_delta"
+    formula: "rank by metric, take top N and bottom N"
+    unit: "list"
+
+  mix_shift_share_delta:
+    description: "Share-of-total delta for mix shift"
+    parameterized:
+      dimension: "channel | ticker | geo"
+      share_on: "end_aum | nnb"
+    formula: "share_current - share_prior"
+    unit: "percent_point"
+
+  anomalies_zscore:
+    description: "Anomaly detection via z-score"
+    formula: "abs(metric - rolling_mean) / rolling_std beyond threshold"
+    unit: "flag"
+
+  anomalies_rolling_std:
+    description: "Anomaly via rolling standard deviation"
+    formula: "rolling_std beyond threshold"
+    unit: "flag"
+
+  reversals:
+    description: "Sign reversals (e.g. NNB flip)"
+    formula: "periods where sign(metric) != sign(prior_metric)"
+    unit: "list"
+
+narrative:
+  templates:
+    overview_firm:
+      - id: "firm_headline"
+        text: "End AUM {end_aum} ({mom_pct} MoM, {ytd_pct} YTD). Net new business {nnb}; OGR {ogr}. Market impact {mkt_abs} ({mkt_rate}). Fee yield {fee_yield}."
+        placeholders: [end_aum, mom_pct, ytd_pct, nnb, ogr, mkt_abs, mkt_rate, fee_yield]
+    channel_commentary:
+      - id: "channel_flow_vs_market"
+        text: "{channel} saw {nnb} NNB with share {share} (delta {share_delta}); rank {rank}."
+        placeholders: [channel, nnb, share, share_delta, rank]
+      - id: "channel_movers"
+        text: "Movers: {movers_list}."
+        placeholders: [movers_list]
+    product_etf_commentary:
+      - id: "product_flow"
+        text: "{ticker} had NNB {nnb}, share {share} (delta {share_delta}); rank {rank}."
+        placeholders: [ticker, nnb, share, share_delta, rank]
+      - id: "product_etf_note"
+        text: "ETF flag {etf_flag}. Movers: {movers_list}."
+        placeholders: [etf_flag, movers_list]
+    geo_commentary:
+      - id: "geo_flow"
+        text: "{geo_country} had NNB {nnb}, share {share} (delta {share_delta}); rank {rank}."
+        placeholders: [geo_country, nnb, share, share_delta, rank]
+      - id: "geo_movers"
+        text: "Movers: {movers_list}."
+        placeholders: [movers_list]
+    anomalies_summary:
+      - id: "anomalies_headline"
+        text: "Z-score flags {zscore_flag}; rolling std {rolling_std_flag}. Reversals: {reversals_list}. Count {anomaly_count}."
+        placeholders: [zscore_flag, rolling_std_flag, reversals_list, anomaly_count]
+    recommendations:
+      - id: "recommendations_headline"
+        text: "Focus channel {focus_channel}, ticker {focus_ticker}, geo {focus_geo}. Actions: {action_summary}."
+        placeholders: [focus_channel, focus_ticker, focus_geo, action_summary]
+
+  rules:
+    - id: "flows_strong_markets_headwind"
+      when: "ogr > 0.02 and mkt_rate < -0.01"
+      emit_template: "insight_flows_strong_markets_headwind"
+      text: "Flows were strong but markets were a headwind (OGR {ogr}, market impact {mkt_rate})."
+      placeholders: [ogr, mkt_rate]
+    - id: "flows_weak_markets_tailwind"
+      when: "ogr < 0.00 and mkt_rate > 0.01"
+      emit_template: "insight_flows_weak_markets_tailwind"
+      text: "Flows were weak but markets were a tailwind (OGR {ogr}, market impact {mkt_rate})."
+      placeholders: [ogr, mkt_rate]
+    - id: "flows_strong_markets_tailwind"
+      when: "ogr > 0.02 and mkt_rate > 0.01"
+      emit_template: "insight_flows_strong_markets_tailwind"
+      text: "Flows and markets both positive (OGR {ogr}, market impact {mkt_rate})."
+      placeholders: [ogr, mkt_rate]
+    - id: "flows_weak_markets_headwind"
+      when: "ogr < 0.00 and mkt_rate < -0.01"
+      emit_template: "insight_flows_weak_markets_headwind"
+      text: "Flows and markets both negative (OGR {ogr}, market impact {mkt_rate})."
+      placeholders: [ogr, mkt_rate]
+    - id: "fee_yield_high"
+      when: "fee_yield > 0.005"
+      emit_template: "insight_fee_yield_high"
+      text: "Fee yield above threshold ({fee_yield})."
+      placeholders: [fee_yield]
+    - id: "fee_yield_low"
+      when: "fee_yield < 0.001"
+      emit_template: "insight_fee_yield_low"
+      text: "Fee yield below threshold ({fee_yield})."
+      placeholders: [fee_yield]
+    - id: "anomaly_count_high"
+      when: "anomaly_count > 3"
+      emit_template: "insight_anomaly_count_high"
+      text: "Anomaly count elevated ({anomaly_count})."
+      placeholders: [anomaly_count]
+
+acceptance_criteria:
+  - "Every sentence must reference only defined placeholders"
+  - "Every placeholder must map to computed metric outputs"
+  - "No free text without a numeric anchor"

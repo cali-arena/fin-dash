@@ -1,0 +1,51 @@
+version: "1.0"
+
+dimensions:
+  channel:
+    label: Channel
+    column: standard_channel
+    type: string
+    synonyms: [channel, distribution, route, sales channel, desk, channel_l1, channel_l2]
+    allowed_grains: [month_end, firm, channel]
+
+  product_ticker:
+    label: Product / Ticker
+    column: product_ticker
+    type: string
+    synonyms: [ticker, fund, etf, product, isin, product ticker]
+    allowed_grains: [month_end, firm, ticker]
+
+  src_country:
+    label: Source Country
+    column: src_country_canonical
+    type: string
+    synonyms: [country, geo, region, market, source country, src country]
+    allowed_grains: [month_end, firm, geo]
+
+  segment:
+    label: Segment
+    column: segment
+    type: string
+    synonyms: [segment, client segment, book, client type]
+    allowed_grains: [month_end, firm, channel, ticker]
+
+  sub_segment:
+    label: Sub-Segment
+    column: sub_segment
+    type: string
+    synonyms: [sub segment, subsegment, sub segment]
+    allowed_grains: [month_end, firm, channel, ticker]
+
+  month_end:
+    label: Month End
+    column: month_end
+    type: date
+    synonyms: [date, month, month_end, period, as of, month end]
+    allowed_grains: [month_end, firm, channel, ticker, geo]
+
+aliases:
+  ticker: product_ticker
+  geo: src_country
+  fund: product_ticker
+  region: src_country
+  distribution: channel

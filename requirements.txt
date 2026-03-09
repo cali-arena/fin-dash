@@ -1,0 +1,9 @@
+# Streamlit Cloud / production runtime (app only; ETL has its own env if needed)
+streamlit>=1.28
+pandas>=2.0
+pydantic>=2
+pyyaml
+plotly
+duckdb
+tabulate>=0.9.0
+reportlab

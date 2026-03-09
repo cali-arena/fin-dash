@@ -1,0 +1,26 @@
+{
+  "build_timestamp_utc": "2026-03-03T15:58:52Z",
+  "columns": [
+    "month_end",
+    "year",
+    "month",
+    "month_name",
+    "quarter",
+    "year_month",
+    "month_start",
+    "is_latest_month",
+    "is_ytd",
+    "is_current_quarter"
+  ],
+  "data_hash": "228296b4a535a86ea377343d03af81321e481b0e",
+  "dim_name": "dim_time",
+  "primary_key": "month_end",
+  "row_count": 1,
+  "sample_keys": [
+    "2021-01-31"
+  ],
+  "schema_hash": "f8ba2cb9e1f0f5a5fe9588331be280364401abdf",
+  "sort_cols": [
+    "month_end"
+  ]
+}

@@ -1,0 +1,2 @@
+month_end,year,month,month_name,quarter,year_month,month_start,is_latest_month,is_ytd,is_current_quarter
+2021-01-31,2021,1,Jan,Q1,2021-01,2021-01-01,True,True,True

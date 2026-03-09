@@ -1,0 +1,27 @@
+{
+  "build_timestamp_utc": "2026-03-03T15:58:52Z",
+  "columns": [
+    "channel_key",
+    "channel_raw",
+    "channel_standard",
+    "channel_best",
+    "preferred_label",
+    "channel_l1",
+    "channel_l2",
+    "channel_map_status"
+  ],
+  "data_hash": "b427f34ec86eeaded00655153d21b735e9e13d00",
+  "dim_name": "dim_channel",
+  "primary_key": "channel_key",
+  "row_count": 0,
+  "sample_keys": [],
+  "schema_hash": "600e090ea86e2df67677cf5df83b9898d7d7f351",
+  "sort_cols": [
+    "preferred_label",
+    "channel_l1",
+    "channel_l2",
+    "channel_best",
+    "channel_standard",
+    "channel_raw"
+  ]
+}

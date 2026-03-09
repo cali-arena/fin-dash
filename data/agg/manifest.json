@@ -1,0 +1,25 @@
+{
+  "dataset_version": "864ccbcf8a57",
+  "tables": [
+    {
+      "name": "firm_monthly",
+      "path": "data/agg/firm_monthly.parquet"
+    },
+    {
+      "name": "channel_monthly",
+      "path": "data/agg/channel_monthly.parquet"
+    },
+    {
+      "name": "ticker_monthly",
+      "path": "data/agg/ticker_monthly.parquet"
+    },
+    {
+      "name": "geo_monthly",
+      "path": "data/agg/geo_monthly.parquet"
+    },
+    {
+      "name": "segment_monthly",
+      "path": "data/agg/segment_monthly.parquet"
+    }
+  ]
+}

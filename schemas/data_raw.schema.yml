@@ -1,0 +1,141 @@
+# Contract-first schema and parsing rules for DATA_RAW.
+# Source: docs/data_contract.md
+
+schema_version: "2026-03-03"
+source_file: "data/input/DATA_RAW.csv"
+
+canonical_grain: "Month-end Date x Channel x src_country x product_ticker x Segment x sub_segment x display_firm x product_country"
+
+required_columns:
+  - name: Date
+    canonical_name: date
+    dtype: datetime
+    nullable: false
+    description: Calendar date of the observation (month-end)
+
+  - name: Channel
+    canonical_name: channel
+    dtype: string
+    nullable: false
+    description: Distribution/sales channel name
+
+  - name: src_country
+    canonical_name: src_country
+    dtype: string
+    nullable: false
+    description: Country code or name of the source
+
+  - name: " Asset Under Management "
+    canonical_name: asset_under_management
+    dtype: float64
+    nullable: false
+    description: Asset under management value for the row grain
+
+  - name: "Net new business"
+    canonical_name: net_new_business
+    dtype: float64
+    nullable: false
+    description: Net new business amount for the row grain
+
+  - name: " net new base fees "
+    canonical_name: net_new_base_fees
+    dtype: float64
+    nullable: false
+    description: Net new base fee amount for the row grain
+
+  - name: display_firm
+    canonical_name: display_firm
+    dtype: string
+    nullable: false
+    description: Firm identifier for display
+
+  - name: product_country
+    canonical_name: product_country
+    dtype: string
+    nullable: false
+    description: Product country code or name
+
+  - name: Standard Channel
+    canonical_name: standard_channel
+    dtype: string
+    nullable: false
+    description: Standardized channel classification
+
+  - name: " best_of_source "
+    canonical_name: best_of_source
+    dtype: float64
+    nullable: false
+    description: Best-of-source indicator/flag (numeric)
+
+  - name: product_ticker
+    canonical_name: product_ticker
+    dtype: string
+    nullable: false
+    description: Product/ETF ticker symbol
+
+  - name: Segment
+    canonical_name: segment
+    dtype: string
+    nullable: false
+    description: Segment classification
+
+  - name: sub_segment
+    canonical_name: sub_segment
+    dtype: string
+    nullable: false
+    description: Sub-segment classification
+
+  - name: uswa_sales_focus_2020
+    canonical_name: uswa_sales_focus_2020
+    dtype: string
+    nullable: false
+    description: Sales focus classification (label)
+
+  - name: master_custodian_firm
+    canonical_name: master_custodian_firm
+    dtype: string
+    nullable: false
+    description: Master custodian firm identifier
+
+optional_columns: []
+
+# Canonical name for the date column (used by type enforcement).
+date_column: date
+
+currency_columns:
+  - asset_under_management
+  - net_new_business
+  - net_new_base_fees
+
+# Canonical names of identifier columns (normalized strings: ticker, channel, country, etc.).
+id_columns:
+  - channel
+  - src_country
+  - product_ticker
+  - segment
+  - sub_segment
+  - display_firm
+  - product_country
+  - standard_channel
+  - master_custodian_firm
+  - uswa_sales_focus_2020
+
+parsing_rules:
+  date:
+    source_column: Date
+    rule: month_end
+    timezone: naive
+    # Optional override for strict date parsing (defaults in type_enforcement.DATE_FORMATS).
+    # date_formats: ["%Y-%m-%d", "%m/%d/%Y", "%d/%m/%Y"]
+  currency:
+    allow_parentheses_negative: true
+    allow_commas: true
+    strip_currency_symbols: true
+  strings:
+    trim: true
+    normalize_whitespace: true
+
+validation_rules:
+  hard_fail_missing_required: true
+  allow_extra_columns: true
+  log_extra_columns: true

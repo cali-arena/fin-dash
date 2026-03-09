@@ -1,0 +1,64 @@
+# Governed metric contract: grains, sign conventions, formulas, tolerances.
+# See docs/metrics_contract.md for plain-English explanation.
+
+version: "1.0"
+
+grains:
+  firm_snapshot:
+    key: ["month_end"]
+    definition: "Latest month_end row from firm_monthly global slice"
+  time_series:
+    key: ["month_end"]
+    definition: "Monthly series at month_end"
+  channel_view:
+    key: ["month_end", "channel"]
+    definition: "Filtered by month_end range; groupby channel"
+  ticker_view:
+    key: ["month_end", "ticker"]
+    definition: "Filtered by month_end range; groupby ticker"
+
+sign_conventions:
+  aum:
+    begin_aum: ">=0"
+    end_aum: ">=0"
+  flows:
+    nnb: "signed; positive=inflows, negative=outflows"
+    nnf: "signed; positive=net fees (or define if it's expense negative)"
+  market:
+    market_pnl: "signed; positive=market gain, negative=loss"
+  rates:
+    ogr: "decimal; e.g. 0.0123 = 1.23%"
+    market_impact_rate: "decimal; e.g. 0.004 = 0.40%"
+    fee_yield: "decimal; define below"
+
+formulas:
+  market_impact:
+    canonical: "end_aum - begin_aum - nnb"
+    notes: "Must reconcile Waterfall: Begin + NNB + MarketImpact = End"
+  ogr:
+    canonical: "nnb / begin_aum"
+    guards:
+      - "if begin_aum==0 => NaN"
+  market_impact_rate:
+    canonical: "market_impact / begin_aum"
+    guards:
+      - "if begin_aum==0 => NaN"
+  fee_yield:
+    canonical: "nnf / average_aum"
+    average_aum: "(begin_aum + end_aum) / 2"
+    guards:
+      - "if nnb <= 0 or missing => NaN (DATA SUMMARY policy)"
+      - "if average_aum <= 0 => NaN"
+    annualization:
+      mode: "monthly"   # allowed: monthly, annualized
+      annualize_factor: 12
+    notes: "Decide if monthly (nnf/month) or annualized; keep explicit"
+
+tolerances:
+  waterfall_abs: 1e-6
+  waterfall_rel: 1e-9
+
+missing_data_policy:
+  division_by_zero: "nan"
+  inf_to_nan: true
+  empty_selection_behavior: "no_data_panel"

@@ -1,0 +1,21 @@
+version: 1
+inputs:
+  aum_series: curated/intermediate/aum_series_all.parquet
+
+first_row_rule:
+  mode: "nan"     # allowed: nan | zero | carry_end
+  # nan      => begin_aum stays NaN for first month in slice
+  # zero     => begin_aum = 0 for first month
+  # carry_end=> begin_aum = end_aum for first month
+
+qa_thresholds:
+  forbid_negative: true
+  max_abs_aum: 1.0e13              # adjust if needed
+  max_month_over_month_ratio: 10.0 # end_aum / begin_aum sanity (ignore when begin_aum is 0 or NaN)
+  sample_slices: 50
+  random_seed: 42
+
+output:
+  artifact_path: curated/aum_begin_end_by_slice.parquet
+  write_meta: true
+  enrich_fact_monthly: false

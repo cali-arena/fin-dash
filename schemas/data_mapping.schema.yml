@@ -1,0 +1,73 @@
+# DATA MAPPING: authority for channel enrichment.
+# Source: data/input/DATA_MAPPING.csv or sheet "DATA MAPPING" if reading from xlsx.
+
+schema_version: "2026-03-03"
+source_file: "data/input/DATA_MAPPING.csv"
+source_sheet: "DATA MAPPING"
+
+# Composite key for rows (used for uniqueness and lookups).
+key_definition:
+  key:
+    - channel_raw
+    - channel_standard
+    - channel_best
+
+# Canonical column names (required after resolution from source aliases).
+required_columns:
+  - channel_raw
+  - channel_standard
+  - channel_best
+
+# Optional enrichment columns (may be missing in source).
+optional_enrichment_columns:
+  - channel_l1
+  - channel_l2
+  - preferred_label
+
+# Map canonical name -> accepted source header names (aliases).
+# First match wins when resolving source columns to canonical.
+accepted_source_names:
+  channel_raw:
+    - Channel
+    - channel_raw
+    - ibp_channel
+  channel_standard:
+    - Standard Channel
+    - standard_channel
+  channel_best:
+    - Best of Source
+    - best_of_source
+    - channel_best
+  channel_l1:
+    - channel_l1
+    - Channel L1
+    - l1
+  channel_l2:
+    - channel_l2
+    - Channel L2
+    - l2
+  preferred_label:
+    - preferred_label
+    - Preferred Label
+    - display_label
+
+# All columns are string type.
+dtypes:
+  channel_raw: string
+  channel_standard: string
+  channel_best: string
+  channel_l1: string
+  channel_l2: string
+  preferred_label: string
+
+# How to normalize values after load.
+normalization_rules:
+  trim_whitespace: true
+  collapse_internal_whitespace: true
+  unicode_normalize: NFKC
+  empty_string_as_null: true
+
+# How to handle duplicate keys.
+uniqueness_policy:
+  mode: hard_fail  # alternatives: dedupe_keep_first, dedupe_prefer_non_null
+  log_duplicates: true

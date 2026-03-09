@@ -1,0 +1,104 @@
+version: "1.0"
+
+metrics:
+  - metric_id: end_aum
+    label: End AUM
+    synonyms: [end aum, aum, assets under management]
+    formula: "column:end_aum"
+    default_agg: last
+    grain: month_end
+    format: currency
+    allowed_dims: [channel, product_ticker, src_country, segment]
+    default_chart: line
+
+  - metric_id: begin_aum
+    label: Begin AUM
+    formula: "column:begin_aum"
+    default_agg: last
+    grain: month_end
+    format: currency
+    allowed_dims: [channel, product_ticker, src_country, segment]
+    default_chart: table
+
+  - metric_id: nnb
+    label: Net New Business
+    synonyms: [nnb, net new business, flows]
+    formula: "column:nnb"
+    default_agg: sum
+    grain: month_end
+    format: currency
+    allowed_dims: [channel, product_ticker, src_country, segment]
+    default_chart: bar
+
+  - metric_id: nnf
+    label: Net New Fees
+    formula: "column:nnf"
+    default_agg: sum
+    grain: month_end
+    format: currency
+    allowed_dims: [channel, product_ticker, src_country, segment]
+    default_chart: table
+
+  - metric_id: mom_pct
+    label: Month-over-Month % Change
+    formula: "expr:(end_aum - begin_aum) / begin_aum"
+    default_agg: last
+    grain: month_end
+    format: percent
+    allowed_dims: [channel, product_ticker, src_country, segment]
+    default_chart: line
+
+  - metric_id: ogr
+    label: Organic Growth Rate
+    synonyms: [ogr, organic growth, growth rate]
+    formula: "expr:nnb / begin_aum"
+    default_agg: last
+    grain: month_end
+    format: percent
+    allowed_dims: [channel, product_ticker, src_country, segment]
+    default_chart: line
+
+  - metric_id: market_impact_abs
+    label: Market Impact (Absolute)
+    formula: "expr:end_aum - begin_aum - nnb"
+    default_agg: last
+    grain: month_end
+    format: currency
+    allowed_dims: [channel, product_ticker, src_country, segment]
+    default_chart: bar
+
+  - metric_id: market_impact_rate
+    label: Market Impact Rate
+    formula: "expr:market_impact_abs / begin_aum"
+    default_agg: last
+    grain: month_end
+    format: percent
+    allowed_dims: [channel, product_ticker, src_country, segment]
+    default_chart: line
+
+  - metric_id: fee_yield
+    label: Fee Yield
+    formula: "expr:nnf / ((begin_aum + end_aum) / 2)"
+    default_agg: last
+    grain: month_end
+    format: percent
+    allowed_dims: [channel, product_ticker, src_country, segment]
+    default_chart: table
+
+  - metric_id: ytd_pct
+    label: Year-to-Date % Change
+    formula: "column:ytd_pct"
+    default_agg: last
+    grain: month_end
+    format: percent
+    allowed_dims: []
+    default_chart: line
+
+  - metric_id: yoy_pct
+    label: Year-over-Year % Change
+    formula: "column:yoy_pct"
+    default_agg: last
+    grain: month_end
+    format: percent
+    allowed_dims: []
+    default_chart: line

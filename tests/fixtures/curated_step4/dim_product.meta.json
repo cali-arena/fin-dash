@@ -1,0 +1,29 @@
+{
+  "created_at_utc": "2026-03-03T16:12:07Z",
+  "data_hash_sample": "ebd39c56e7cb322c96ba405e4c3f531eb92e85e6",
+  "dataset_version": "5882aef86496213a93af51aebdd0fedb72d98e24",
+  "key_nulls": 0,
+  "key_unique": true,
+  "name": "dim_product",
+  "primary_key": "product_ticker",
+  "row_count": 2,
+  "schema": [
+    {
+      "dtype": "string",
+      "name": "product_key"
+    },
+    {
+      "dtype": "string",
+      "name": "product_ticker"
+    },
+    {
+      "dtype": "object",
+      "name": "segment"
+    },
+    {
+      "dtype": "object",
+      "name": "sub_segment"
+    }
+  ],
+  "schema_hash": "8f2ab6d6a94ad568e8e52330d118da0c49c07f36"
+}

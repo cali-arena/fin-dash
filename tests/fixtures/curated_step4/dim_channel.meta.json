@@ -1,0 +1,45 @@
+{
+  "created_at_utc": "2026-03-03T16:12:07Z",
+  "data_hash_sample": "873319867a5bd265b1cc1c92cc0488be5301d257",
+  "dataset_version": "5882aef86496213a93af51aebdd0fedb72d98e24",
+  "key_nulls": 0,
+  "key_unique": true,
+  "name": "dim_channel",
+  "primary_key": "channel_key",
+  "row_count": 2,
+  "schema": [
+    {
+      "dtype": "string",
+      "name": "channel_key"
+    },
+    {
+      "dtype": "object",
+      "name": "channel_raw"
+    },
+    {
+      "dtype": "object",
+      "name": "channel_standard"
+    },
+    {
+      "dtype": "object",
+      "name": "channel_best"
+    },
+    {
+      "dtype": "object",
+      "name": "preferred_label"
+    },
+    {
+      "dtype": "object",
+      "name": "channel_l1"
+    },
+    {
+      "dtype": "object",
+      "name": "channel_l2"
+    },
+    {
+      "dtype": "object",
+      "name": "channel_map_status"
+    }
+  ],
+  "schema_hash": "7ebd26563fdaf61005280215ae9008d777d7a096"
+}

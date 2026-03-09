@@ -1,0 +1,20 @@
+services:
+  app:
+    build: .
+    ports: ["8501:8501"]
+    environment:
+      - DEV_MODE=0
+      - DATA_DIR=/workspace/data
+      - DUCKDB_PATH=/workspace/analytics.duckdb
+    volumes:
+      - ./data:/workspace/data
+      - ./analytics.duckdb:/workspace/analytics.duckdb
+    command: ["streamlit", "run", "app/main.py", "--server.port=8501", "--server.address=0.0.0.0"]
+
+  etl:
+    build: .
+    profiles: ["etl"]
+    volumes:
+      - ./data:/workspace/data
+      - ./analytics.duckdb:/workspace/analytics.duckdb
+    command: ["python", "etl/build_data.py", "--curated-dir", "/workspace/data/curated", "--agg-dir", "/workspace/data/agg", "--duckdb-path", "/workspace/analytics.duckdb"]

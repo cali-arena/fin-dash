@@ -1,0 +1,61 @@
+{
+  "audit": {
+    "policy_snapshot_path": "curated/policy/metrics_policy.snapshot.json",
+    "write_policy_snapshot": true
+  },
+  "inputs": {
+    "grain_required": [
+      "month_end",
+      "path_id",
+      "slice_id"
+    ],
+    "required_columns": [
+      "begin_aum",
+      "end_aum",
+      "nnb",
+      "nnf"
+    ]
+  },
+  "policies": {
+    "begin_aum_guard": {
+      "applies_to_rates": [
+        "ogr",
+        "market_impact_rate",
+        "total_growth_rate"
+      ],
+      "mode": "nan",
+      "threshold": 0.0
+    },
+    "clamp": {
+      "caps": {
+        "fee_yield": {
+          "max": 0.2,
+          "min": 0.0
+        },
+        "market_impact_rate": {
+          "max": 2.0,
+          "min": -2.0
+        },
+        "ogr": {
+          "max": 2.0,
+          "min": -2.0
+        },
+        "total_growth_rate": {
+          "max": 2.0,
+          "min": -2.0
+        }
+      },
+      "enabled": true,
+      "mode": "warn_only"
+    },
+    "fee_yield_guard": {
+      "cap_value": 0.0,
+      "mode": "nan",
+      "threshold": 0.0
+    },
+    "inf_handling": {
+      "mode": "nan"
+    }
+  },
+  "version": 1
+}

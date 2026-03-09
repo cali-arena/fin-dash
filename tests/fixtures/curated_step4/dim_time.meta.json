@@ -1,0 +1,53 @@
+{
+  "created_at_utc": "2026-03-03T16:12:07Z",
+  "data_hash_sample": "e4b3b3adfad02f5e4c48a7716baf525fa5da166f",
+  "dataset_version": "5882aef86496213a93af51aebdd0fedb72d98e24",
+  "key_nulls": 0,
+  "key_unique": true,
+  "name": "dim_time",
+  "primary_key": "month_end",
+  "row_count": 2,
+  "schema": [
+    {
+      "dtype": "datetime64[ns]",
+      "name": "month_end"
+    },
+    {
+      "dtype": "int64",
+      "name": "year"
+    },
+    {
+      "dtype": "int64",
+      "name": "month"
+    },
+    {
+      "dtype": "string",
+      "name": "month_name"
+    },
+    {
+      "dtype": "string",
+      "name": "quarter"
+    },
+    {
+      "dtype": "string",
+      "name": "year_month"
+    },
+    {
+      "dtype": "datetime64[ns]",
+      "name": "month_start"
+    },
+    {
+      "dtype": "bool",
+      "name": "is_latest_month"
+    },
+    {
+      "dtype": "bool",
+      "name": "is_ytd"
+    },
+    {
+      "dtype": "boolean",
+      "name": "is_current_quarter"
+    }
+  ],
+  "schema_hash": "f8ba2cb9e1f0f5a5fe9588331be280364401abdf"
+}

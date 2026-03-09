@@ -1,0 +1,29 @@
+{
+  "created_at_utc": "2026-03-03T16:12:07Z",
+  "data_hash_sample": "6959279df3684a223e984359a90026eaae5800ea",
+  "dataset_version": "5882aef86496213a93af51aebdd0fedb72d98e24",
+  "key_nulls": 0,
+  "key_unique": true,
+  "name": "dim_geo",
+  "primary_key": "country_key",
+  "row_count": 3,
+  "schema": [
+    {
+      "dtype": "string",
+      "name": "country_key"
+    },
+    {
+      "dtype": "string",
+      "name": "country"
+    },
+    {
+      "dtype": "string",
+      "name": "region"
+    },
+    {
+      "dtype": "string",
+      "name": "country_type_flags"
+    }
+  ],
+  "schema_hash": "19ce71b051c9015a21810c2133801417a6857e1a"
+}

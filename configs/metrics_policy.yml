@@ -1,0 +1,41 @@
+version: 1
+inputs:
+  required_columns:
+    - begin_aum
+    - end_aum
+    - nnb
+    - nnf
+  grain_required:
+    - month_end
+    - path_id
+    - slice_id
+
+policies:
+  begin_aum_guard:
+    mode: "nan"          # allowed: nan | zero
+    threshold: 0.0       # if begin_aum <= threshold -> guarded behavior
+    applies_to_rates:
+      - ogr
+      - market_impact_rate
+      - total_growth_rate
+
+  fee_yield_guard:
+    mode: "nan"          # allowed: nan | zero | cap
+    threshold: 0.0       # if nnb <= threshold -> guarded behavior
+    cap_value: 0.0       # only used when mode="cap"
+
+  inf_handling:
+    mode: "nan"          # always convert +/-inf to NaN (fixed)
+
+  clamp:
+    enabled: true
+    mode: "warn_only"    # allowed: warn_only | hard_clamp
+    caps:
+      ogr: {min: -2.0, max: 2.0}
+      market_impact_rate: {min: -2.0, max: 2.0}
+      total_growth_rate: {min: -2.0, max: 2.0}
+      fee_yield: {min: 0.0, max: 0.2}
+
+audit:
+  write_policy_snapshot: true
+  policy_snapshot_path: curated/policy/metrics_policy.snapshot.json

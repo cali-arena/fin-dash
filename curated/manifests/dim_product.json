@@ -1,0 +1,20 @@
+{
+  "build_timestamp_utc": "2026-03-03T15:58:52Z",
+  "columns": [
+    "product_key",
+    "product_ticker",
+    "segment",
+    "sub_segment"
+  ],
+  "data_hash": "a4ebaa09952cf1234a283b8ac269f6627dd55474",
+  "dim_name": "dim_product",
+  "primary_key": "product_ticker",
+  "row_count": 1,
+  "sample_keys": [
+    "A"
+  ],
+  "schema_hash": "8f2ab6d6a94ad568e8e52330d118da0c49c07f36",
+  "sort_cols": [
+    "product_ticker"
+  ]
+}

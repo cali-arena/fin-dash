@@ -1,0 +1,78 @@
+# Dimension schema lock: natural keys, dtypes, SCD stance.
+# Aligns with docs/star_contract.md. Role-playing: fact_monthly joins to dim_geo twice
+# (src_country and product_country both use dim_geo.country_key).
+
+schema_version: "2026-03-03"
+scd_policy: "type_1_overwrite"
+
+dimensions:
+  dim_time:
+    natural_key: ["month_end"]
+    required_columns:
+      - name: month_end
+        dtype: datetime64[ns]
+      - name: year
+        dtype: int64
+      - name: quarter
+        dtype: int64
+      - name: month
+        dtype: int64
+      - name: month_name
+        dtype: string
+      - name: is_q_end
+        dtype: bool
+      - name: is_y_end
+        dtype: bool
+
+  dim_channel:
+    natural_key: ["preferred_label"]
+    optional_surrogate:
+      - name: channel_id
+        dtype: string
+        description: "Stable hash of preferred_label"
+    required_columns:
+      - name: preferred_label
+        dtype: string
+      - name: channel_l1
+        dtype: string
+      - name: channel_l2
+        dtype: string
+
+  dim_product:
+    natural_key: ["product_ticker"]
+    optional_surrogate:
+      - name: product_id
+        dtype: string
+        description: "Stable hash of product_ticker"
+    required_columns:
+      - name: product_ticker
+        dtype: string
+      - name: segment
+        dtype: string
+      - name: sub_segment
+        dtype: string
+
+  dim_geo:
+    natural_key: ["country_key"]
+    required_columns:
+      - name: country_key
+        dtype: string
+        description: "Normalized key (join key for fact)"
+      - name: country_raw
+        dtype: string
+        description: "Original value from source"
+      - name: country_norm
+        dtype: string
+        description: "Normalized display name"
+      - name: iso2
+        dtype: string
+        nullable: true
+      - name: iso3
+        dtype: string
+        nullable: true
+      - name: region
+        dtype: string
+        nullable: true
+
+notes:
+  - "dim_geo is role-playing: fact_monthly.src_country and fact_monthly.product_country both join to dim_geo.country_key."

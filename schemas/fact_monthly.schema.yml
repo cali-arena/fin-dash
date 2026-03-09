@@ -1,0 +1,191 @@
+# Curated fact table contract: single monthly grain.
+# Contract-first. Source: raw/data_raw.parquet; target: curated/fact_monthly.parquet.
+
+schema_version: "2026-03-03"
+source: "raw/data_raw.parquet"
+target: "curated/fact_monthly.parquet"
+
+# One row per (month_end, product_ticker, channel_best, src_country, product_country, segment, sub_segment).
+grain:
+  - month_end
+  - product_ticker
+  - channel_best
+  - src_country
+  - product_country
+  - segment
+  - sub_segment
+
+# Dimensions: identifiers and classifiers. All string (or category) except month_end.
+dimensions:
+  - name: month_end
+    dtype: datetime
+    required: true
+    description: "Month-end date (grain)."
+
+  - name: product_ticker
+    dtype: string
+    required: true
+    description: "Product/ETF ticker (grain)."
+
+  - name: channel_raw
+    dtype: string
+    required: true
+    description: "Raw channel name from source."
+
+  - name: channel_standard
+    dtype: string
+    required: true
+    description: "Standardized channel."
+
+  - name: channel_best
+    dtype: string
+    required: true
+    description: "Best-of-source channel (grain)."
+
+  - name: src_country
+    dtype: string
+    required: true
+    description: "Source country (grain)."
+
+  - name: product_country
+    dtype: string
+    required: true
+    description: "Product country (grain)."
+
+  - name: segment
+    dtype: string
+    required: true
+    description: "Segment (grain)."
+
+  - name: sub_segment
+    dtype: string
+    required: true
+    description: "Sub-segment (grain)."
+
+  - name: display_firm
+    dtype: string
+    required: false
+    description: "Firm identifier for display (optional)."
+
+  - name: master_custodian_firm
+    dtype: string
+    required: false
+    description: "Master custodian firm (optional)."
+
+# Measures: numeric, aggregated from raw to monthly grain.
+measures:
+  - name: asset_under_management
+    alias: aum
+    dtype: float64
+    required: true
+    description: "AUM at grain (snapshot rule)."
+
+  - name: net_new_business
+    alias: nnb
+    dtype: float64
+    required: true
+    description: "Net new business (sum over grain)."
+
+  - name: net_new_base_fees
+    alias: nnf
+    dtype: float64
+    required: true
+    description: "Net new base fees (sum over grain)."
+
+# How to aggregate from raw (multiple rows per grain) to one row per grain.
+aggregation_rules:
+  net_new_business:
+    rule: sum
+    description: "Sum NNB within (month_end, product_ticker, channel_best, src_country, product_country, segment, sub_segment)."
+
+  net_new_base_fees:
+    rule: sum
+    description: "Sum NNF within grain."
+
+  asset_under_management:
+    rule: snapshot
+    default: last_non_null
+    fallback: max
+    description: |
+      Snapshot within month_end grain. Default = last non-null value (e.g. by date
+      or load order within month). Fallback = max if no non-null; document choice
+      in pipeline. Do not sum AUM across rows of same grain.
+
+# Quality rules applied to curated output.
+quality_rules:
+  - name: unique_grain
+    description: "Enforce unique grain; no duplicate (month_end, product_ticker, channel_best, src_country, product_country, segment, sub_segment)."
+
+  - name: no_nulls_in_grain
+    description: "No nulls in grain fields (month_end, product_ticker, channel_best, src_country, product_country, segment, sub_segment)."
+
+  - name: rowcount_positive
+    description: "Row count > 0 (curated table must not be empty when source has data)."
+
+# Flat schema lock / summary for downstream checks.
+
+# Increment when making backward-incompatible changes to curated/fact_monthly.
+version: 1
+
+required_canonical_columns:
+  - month_end
+  - product_ticker
+  - channel_raw
+  - channel_standard
+  - channel_best
+  - channel_l1
+  - channel_l2
+  - preferred_label
+  - channel_map_status
+  - src_country
+  - product_country
+  - segment
+  - sub_segment
+  - display_firm
+  - master_custodian_firm
+  - asset_under_management
+  - net_new_business
+  - net_new_base_fees
+
+dtypes:
+  month_end: datetime64[ns]
+  product_ticker: string
+  channel_raw: string
+  channel_standard: string
+  channel_best: string
+  channel_l1: string
+  channel_l2: string
+  preferred_label: string
+  channel_map_status: string
+  src_country: string
+  product_country: string
+  segment: string
+  sub_segment: string
+  display_firm: string
+  master_custodian_firm: string
+  asset_under_management: float64
+  net_new_business: float64
+  net_new_base_fees: float64
+
+# Convenience name lists.
+dims:
+  - month_end
+  - product_ticker
+  - channel_raw
+  - channel_standard
+  - channel_best
+  - channel_l1
+  - channel_l2
+  - preferred_label
+  - channel_map_status
+  - src_country
+  - product_country
+  - segment
+  - sub_segment
+  - display_firm
+  - master_custodian_firm
+
+measures_list:
+  - asset_under_management
+  - net_new_business
+  - net_new_base_fees

@@ -1,0 +1,22 @@
+{
+  "build_timestamp_utc": "2026-03-03T16:12:07Z",
+  "columns": [
+    "country_key",
+    "country",
+    "region",
+    "country_type_flags"
+  ],
+  "data_hash": "6959279df3684a223e984359a90026eaae5800ea",
+  "dim_name": "dim_geo",
+  "primary_key": "country_key",
+  "row_count": 3,
+  "sample_keys": [
+    "09acbb7d1da8aa3daff4c1ec8076713606974c64",
+    "d5df35a200ea03c11e5696e3379854b5810f9cd1",
+    "aa3093554472fd113135bed5b63e12f84c2e9fe8"
+  ],
+  "schema_hash": "19ce71b051c9015a21810c2133801417a6857e1a",
+  "sort_cols": [
+    "country"
+  ]
+}

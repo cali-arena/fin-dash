@@ -1,0 +1,23 @@
+{
+  "created_at_utc": "2021-01-01T00:00:00Z",
+  "dataset_version": "v1",
+  "output_paths": [
+    "raw\\data_raw.parquet",
+    "raw\\data_raw_rejects.parquet"
+  ],
+  "pipeline_version": "p1",
+  "row_counts": {
+    "data_raw": 1,
+    "data_raw_rejects": 0
+  },
+  "schema_summary": {
+    "asset_under_management": "float64",
+    "channel": "object",
+    "date": "datetime64[ns]",
+    "net_new_base_fees": "float64",
+    "net_new_business": "float64",
+    "product_ticker": "object",
+    "src_country": "object"
+  },
+  "source_sha256": "abc"
+}

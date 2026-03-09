@@ -1,0 +1,16 @@
+version: 1
+fact_table: curated/fact_monthly.parquet
+grain_keys:
+  - month_end
+
+measures:
+  end_aum:
+    type: "aum"              # semantic tag
+    rollup: "sum"            # options: sum | max | last_non_null | weighted_avg
+    snapshot_tiebreak:
+      order_by: ["source_priority", "updated_at", "row_id"]   # only used if rollup is snapshot-like
+      direction: "desc"
+
+defaults:
+  null_end_aum: "drop"       # drop rows with null end_aum before aggregation
+  strict: true               # if unexpected duplicates, enforce rule and log QA

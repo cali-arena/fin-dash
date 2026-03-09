@@ -1,0 +1,30 @@
+# Copy to duckdb_policy.yml and adjust. DuckDB analytics-layer contract.
+duckdb:
+  db_path: "analytics/analytics.duckdb"
+  schema: "analytics"
+  refresh_mode: "rebuild"          # "rebuild" or "incremental" (incremental later)
+  source_paths:
+    curated:
+      metrics_monthly: "curated/metrics_monthly.parquet"     # optional
+      dims_glob: "curated/dim_*.parquet"                     # optional glob
+    agg:
+      firm_monthly: "agg/firm_monthly.parquet"
+      channel_monthly: "agg/channel_monthly.parquet"
+      ticker_monthly: "agg/ticker_monthly.parquet"
+      geo_monthly: "agg/geo_monthly.parquet"
+      segment_monthly: "agg/segment_monthly.parquet"
+  views_to_create:
+    v_firm_monthly: { source: "agg.firm_monthly" }
+    v_channel_monthly: { source: "agg.channel_monthly" }
+    v_ticker_monthly: { source: "agg.ticker_monthly" }
+    v_geo_monthly: { source: "agg.geo_monthly" }
+    v_segment_monthly: { source: "agg.segment_monthly" }
+  ui_rule:
+    reads_views_only: true
+
+# Optional: QA time budgets (ms) for python -m pipelines.duckdb.qa_duckdb_layer
+# qa:
+#   time_budget_ms:
+#     firm: 200
+#     channel: 500
+#     ticker: 500

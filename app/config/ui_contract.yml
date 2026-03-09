@@ -1,0 +1,51 @@
+# UI Contract v1.0 — authoritative surface area for the Streamlit app.
+# All pages must conform to this contract; filters must be read/written only via app/state.py.
+# Schema: tabs, global_filters, data_access, guardrails.
+
+tabs:
+  - visualisations
+  - dynamic_report
+  - nlq_chat
+
+global_filters:
+  date_range:
+    mode: month
+    required: true
+  drill_path:
+    type: list
+    required: true
+    default: ["channel", "country", "ticker"]
+  slice:
+    type: string
+    required: false
+    default: null
+  currency_toggle:
+    type: enum
+    required: false
+    values: ["native", "usd"]
+    default: "native"
+  unit_toggle:
+    type: enum
+    required: false
+    values: ["units", "thousands", "millions"]
+    default: "units"
+
+data_access:
+  gateway_module: app/data_gateway.py
+  forbid_direct_access: true
+  allowed_views:
+    - v_firm_monthly
+    - v_channel_monthly
+    - v_ticker_monthly
+
+guardrails:
+  deny_imports:
+    - duckdb
+    - pyarrow.parquet
+    - pandas.read_parquet
+  deny_paths:
+    - curated/
+    - agg/
+    - raw/
+
+version: "1.0"

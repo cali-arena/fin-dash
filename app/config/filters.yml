@@ -1,0 +1,54 @@
+version: "1.0"
+
+notes: "All query builders must resolve UI modes through this file; never hardcode column choices in UI/pages."
+
+# -----------------------------------------------------------------------------
+# Time
+# -----------------------------------------------------------------------------
+time:
+  date_range: [start_month_end, end_month_end]
+  period_mode:
+    enum: ["1M", "QoQ", "YTD", "YoY"]
+    descriptions:
+      "1M": "Single month (month-end snapshot)."
+      "QoQ": "Quarter-over-quarter comparison."
+      "YTD": "Year-to-date cumulative."
+      "YoY": "Year-over-year comparison."
+
+# -----------------------------------------------------------------------------
+# Channel view selector
+# -----------------------------------------------------------------------------
+channel_view:
+  enum: ["raw", "standard", "best", "canonical"]
+  column_mapping:
+    raw: channel_raw
+    standard: channel_standard
+    best: channel_best
+    canonical: preferred_label
+
+# -----------------------------------------------------------------------------
+# Geo
+# -----------------------------------------------------------------------------
+geo:
+  geo_dim:
+    enum: ["src_country", "product_country"]
+    column_mapping:
+      src_country: src_country_canonical
+      product_country: product_country_canonical
+
+# -----------------------------------------------------------------------------
+# Product
+# -----------------------------------------------------------------------------
+product:
+  product_dim:
+    enum: ["ticker", "segment", "sub_segment"]
+    column_mapping:
+      ticker: product_ticker
+      segment: segment
+      sub_segment: sub_segment
+
+# -----------------------------------------------------------------------------
+# Custodian firm (optional; hide if column not in view schema)
+# -----------------------------------------------------------------------------
+custodian_firm:
+  enabled_if_column_exists: "custodian_firm"

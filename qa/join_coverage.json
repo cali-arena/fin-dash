@@ -1,0 +1,42 @@
+{
+  "joins": {
+    "channel": {
+      "coverage_rate": null,
+      "note": "dim_channel empty or missing"
+    },
+    "product": {
+      "coverage_rate": 1.0,
+      "key_dim": "product_ticker",
+      "key_fact": "product_ticker",
+      "matched": 1,
+      "total": 1
+    },
+    "product_geo": {
+      "coverage_rate": 1.0,
+      "key_dim": "country",
+      "key_fact": "product_country_canonical",
+      "matched": 1,
+      "total": 1
+    },
+    "src_geo": {
+      "coverage_rate": 1.0,
+      "key_dim": "country",
+      "key_fact": "src_country_canonical",
+      "matched": 1,
+      "total": 1
+    },
+    "time": {
+      "coverage_rate": 1.0,
+      "key_dim": "month_end",
+      "key_fact": "month_end",
+      "matched": 1,
+      "total": 1
+    }
+  },
+  "top_missing_keys": {
+    "product": [],
+    "product_geo": [],
+    "src_geo": [],
+    "time": []
+  }
+}

@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "finance-dash"
+version = "0.1.0"
+description = "Streamlit BI/NLQ dashboard for finance metrics"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "pandas",
+    "streamlit",
+    "pydantic>=2",
+    "pyyaml",
+    "plotly",
+    "tabulate",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "duckdb"]
+pdf = ["reportlab"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["app*", "models*", "etl*", "legacy*"]

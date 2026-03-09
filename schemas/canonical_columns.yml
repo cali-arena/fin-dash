@@ -1,0 +1,137 @@
+# Canonical column dictionary for downstream facts. All downstream code uses these
+# canonical_name values (snake_case) with ZERO exceptions. Mapping from source
+# (Excel/CSV) headers to canonical is done by matching accepted_source_names;
+# matching should be whitespace-normalized and case-insensitive.
+#
+# schema_version: contract version for this canonical set.
+# columns: list of column definitions. Each has canonical_name, accepted_source_names,
+#   dtype, required, and description.
+
+schema_version: "2026-03-03"
+description: "Canonical column dictionary for downstream facts (snake_case)."
+
+columns:
+  - canonical_name: month_end
+    accepted_source_names:
+      - "Date"
+      - "date"
+      - "DATE"
+    dtype: datetime
+    required: true
+    description: "Month-end date of the observation (datetime, same month)."
+
+  - canonical_name: asset_under_management
+    accepted_source_names:
+      - "aum"
+      - "AUM"
+      - "Asset Under Management"
+      - " Asset Under Management "
+      - "Asset under management"
+      - "asset_under_management"
+    dtype: float64
+    required: true
+    description: "Asset under management value for the row grain."
+
+  - canonical_name: net_new_business
+    accepted_source_names:
+      - "nnb"
+      - "NNB"
+      - "Net new business"
+      - "Net New Business"
+      - "net_new_business"
+    dtype: float64
+    required: true
+    description: "Net new business amount for the row grain."
+
+  - canonical_name: net_new_base_fees
+    accepted_source_names:
+      - "nnf"
+      - "net new base fees"
+      - " net new base fees "
+      - "net_new_base_fees"
+      - "Net New Base Fees"
+    dtype: float64
+    required: true
+    description: "Net new base fee amount for the row grain."
+
+  - canonical_name: product_ticker
+    accepted_source_names:
+      - "Ticker"
+      - "ticker"
+      - "product_ticker"
+      - "Product Ticker"
+    dtype: string
+    required: true
+    description: "Product/ETF ticker symbol."
+
+  - canonical_name: segment
+    accepted_source_names:
+      - "Segment"
+      - "segment"
+      - "SEGMENT"
+    dtype: string
+    required: true
+    description: "Segment classification."
+
+  - canonical_name: sub_segment
+    accepted_source_names:
+      - "sub_segment"
+      - "Sub Segment"
+      - "sub segment"
+      - "SubSegment"
+    dtype: string
+    required: true
+    description: "Sub-segment classification."
+
+  - canonical_name: src_country
+    accepted_source_names:
+      - "src_country"
+      - "Source Country"
+      - "src country"
+      - "source_country"
+    dtype: string
+    required: true
+    description: "Country code or name of the source."
+
+  - canonical_name: product_country
+    accepted_source_names:
+      - "product_country"
+      - "Product Country"
+      - "product country"
+    dtype: string
+    required: true
+    description: "Product country code or name."
+
+  - canonical_name: channel_raw
+    accepted_source_names:
+      - "Channel"
+      - "channel"
+      - "CHANNEL"
+    dtype: string
+    required: true
+    description: "Raw distribution/sales channel name from source."
+
+  - canonical_name: channel_standard
+    accepted_source_names:
+      - "Standard Channel"
+      - "standard_channel"
+      - "Channel Standard"
+      - "standard channel"
+    dtype: string
+    required: true
+    description: "Standardized channel classification."
+
+  - canonical_name: channel_best
+    accepted_source_names:
+      - "best_of_source"
+      - " best_of_source "
+      - "channel_best"
+      - "Best Of Source"
+      - "best of source"
+    dtype: string
+    required: true
+    description: "Best-of-source indicator/flag."
+
+# Note: The canonical schema is what downstream uses; mapping resolves source
+# headers to canonical. accepted_source_names matching should be
+# whitespace-normalized and case-insensitive.

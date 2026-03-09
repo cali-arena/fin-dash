@@ -1,0 +1,17 @@
+{
+  "gate_stats": {
+    "nan_ratio_by_col": {
+      "asset_under_management": 0.0,
+      "net_new_base_fees": 0.0,
+      "net_new_business": 0.0
+    },
+    "row_count": 1,
+    "total_nan_cells": 0,
+    "total_nan_ratio": 0.0,
+    "total_numeric_cells": 3
+  },
+  "load_report": {},
+  "timestamp": "2021-01-01T00:00:00Z",
+  "type_enforcement_stats": {},
+  "version": {}
+}

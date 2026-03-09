@@ -1,0 +1,26 @@
+# Copy to cache_policy.yml. Cache contract: keys, TTL, invalidation.
+# Validated by pipelines.contracts.cache_policy_contract.
+cache:
+  dataset_version_source:
+    path: "curated/metrics_monthly.meta.json"
+    key: "dataset_version"           # single source of truth
+  cache_keys:
+    - "dataset_version"
+    - "filter_state_hash"
+    - "query_name"
+  ttl_seconds:
+    fast: 60
+    medium: 300
+    heavy: 1800
+  query_classes:
+    firm_monthly: "fast"
+    channel_monthly: "fast"
+    ticker_monthly: "fast"
+    geo_monthly: "fast"
+    segment_monthly: "fast"
+    kpi_cards: "medium"
+    correlation_matrix: "heavy"
+  max_entries:
+    fast: 256
+    medium: 128
+    heavy: 32

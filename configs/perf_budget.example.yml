@@ -1,0 +1,11 @@
+# Copy to perf_budget.yml. Performance budgets with dev fail-on-exceed.
+# Used by app.perf_budget to enforce query/chart latency limits.
+perf_budget:
+  firm_monthly_ms: 200
+  channel_monthly_ms: 500
+  ticker_monthly_ms: 500
+  geo_monthly_ms: 500
+  segment_monthly_ms: 500
+  heavy_chart_ms: 1000
+  warn_multiplier: 1.25   # warn if elapsed > budget * 1.25
+  fail_in_dev: true       # raise RuntimeError when exceeded in dev mode

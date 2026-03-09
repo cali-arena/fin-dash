@@ -1,0 +1,38 @@
+# Copy to agg_policy.yml and adjust. Pre-aggregation contract (Step 1).
+agg:
+  source_table: "curated/metrics_monthly.parquet"
+  time_key: "month_end"
+  measures:
+    additive: ["begin_aum", "end_aum", "nnb", "nnf", "market_pnl"]
+    rates: ["ogr", "market_impact_rate", "fee_yield"]
+  dims:
+    channel_l1: "channel_l1"
+    channel_l2: "channel_l2"
+    product_ticker: "product_ticker"
+    src_country_canonical: "src_country_canonical"
+    segment: "segment"
+    sub_segment: "sub_segment"
+  grains:
+    firm_monthly: []
+    channel_monthly:
+      - ["channel_l1"]
+      - ["channel_l1", "channel_l2"]
+    ticker_monthly: ["product_ticker"]
+    geo_monthly: ["src_country_canonical"]
+    segment_monthly:
+      - ["segment"]
+      - ["segment", "sub_segment"]
+  null_handling:
+    strategy: "UNKNOWN"
+    unknown_label: "UNKNOWN"
+  rollup:
+    additive_method: "sum"
+    rates_method: "recompute"
+    weights:
+      ogr: "begin_aum"
+      market_impact_rate: "begin_aum"
+      fee_yield: "nnb"
+# Optional: join coverage QA (warn/fail on pct missing after dim joins)
+# join_coverage:
+#   warn_threshold: 0.001   # 0.1%; write qa/agg_join_coverage_warnings.json
+#   fail_threshold: 0.05    # 5%; write warnings then raise

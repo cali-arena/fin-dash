@@ -1,0 +1,17 @@
+# QA thresholds for firm-level recomputed series (curated/qa/firm_level_recomputed.parquet).
+# Used by pipelines/validation/qa_firm_level.py
+
+version: 1
+
+identity:
+  tol_pct: 1.0e-6          # tolerance = max(atol, tol_pct * max(1, abs(end_aum_firm)))
+  atol: 1.0e-6
+  max_violations_to_report: 50
+
+guard:
+  threshold: 0.0           # begin_aum_firm <= threshold => rates must be NaN (align with begin_aum_guard)
+
+rate_columns:
+  - asset_growth_rate
+  - organic_growth_rate
+  - external_market_growth_rate

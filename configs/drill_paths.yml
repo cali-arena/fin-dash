@@ -1,0 +1,56 @@
+version: 1
+grain: monthly
+fact_table: curated/fact_monthly.parquet
+
+keys:
+  time: month_end
+  channel: preferred_label
+  product: product_ticker
+  geo_src: src_country_canonical
+  geo_product: product_country_canonical
+
+drill_paths:
+  - id: global
+    label: Global
+    keys: []
+    enabled: true
+
+  - id: by_channel
+    label: By Channel
+    keys: [preferred_label]
+    enabled: true
+
+  - id: by_product
+    label: By Product
+    keys: [product_ticker]
+    enabled: true
+
+  - id: by_src_geo
+    label: By Source Geo
+    keys: [src_country_canonical]
+    enabled: true
+
+  - id: by_product_geo
+    label: By Product Geo
+    keys: [product_country_canonical]
+    enabled: true
+
+  - id: by_channel_product
+    label: Channel x Product
+    keys: [preferred_label, product_ticker]
+    enabled: true
+
+  - id: by_channel_src_geo
+    label: Channel x Source Geo
+    keys: [preferred_label, src_country_canonical]
+    enabled: false
+
+  - id: by_product_src_geo
+    label: Product x Source Geo
+    keys: [product_ticker, src_country_canonical]
+    enabled: false
+
+rules:
+  allow_duplicates: false
+  max_keys_per_path: 3
+  require_keys_exist_in_fact: true
