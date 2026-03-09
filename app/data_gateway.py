@@ -1987,6 +1987,7 @@ GOVERNED_QUERIES = frozenset({
     "notable_months",
     "coverage_stats",
     "available_columns",
+    "list_channel_values",
     "list_geo_values",
     "list_product_values",
     "list_custodian_firms",
@@ -2005,6 +2006,7 @@ ALLOWED_QUERY_NAMES = frozenset({
     "notable_months",
     "coverage_stats",
     "available_columns",
+    "list_channel_values",
     "list_geo_values",
     "list_product_values",
     "list_custodian_firms",
@@ -2129,6 +2131,20 @@ def _run_distinct_list(
         return df[column_name].astype(str).str.strip().dropna().unique().tolist()
     except Exception:
         return []
+
+
+def _impl_list_channel_values(state: FilterState, root: Path | None, limit: int) -> list[str]:
+    """Distinct values for resolved channel column; filters = date range + slice, excluding channel value filter."""
+    contract = load_filters_contract()
+    channel_col = resolve_channel_column(state.channel_view, contract)
+    view_name = _LIST_VALUES_VIEW
+    available = get_available_columns(view_name, root)
+    if channel_col not in available:
+        return []
+    filters = _state_to_filters(state, view_name=view_name, root=root)
+    filters.pop(channel_col, None)
+    config = get_config(root)
+    return _run_distinct_list(config["schema"], view_name, channel_col, filters, root, limit)
 
 
 def _impl_list_geo_values(state: FilterState, root: Path | None, limit: int) -> list[str]:
@@ -2562,6 +2578,19 @@ def _cached_governed(
 # Cached list-value helpers (dataset_version + filter_hash + query_name + dim_mode)
 if st is not None:
     @st.cache_data(ttl=3600, show_spinner=False)
+    def _cached_list_channel_impl(
+        _dv: str,
+        _h: str,
+        _channel_view: str,
+        _limit: int,
+        _state_json: str,
+        _root_str: str | None,
+    ) -> list[str]:
+        state = FilterState.from_dict(json.loads(_state_json))
+        root = Path(_root_str) if _root_str else None
+        return _impl_list_channel_values(state, root, _limit)
+
+    @st.cache_data(ttl=3600, show_spinner=False)
     def _cached_list_geo_impl(
         _dv: str,
         _h: str,
@@ -2616,6 +2645,18 @@ if st is not None:
         root = Path(_root_str) if _root_str else None
         return get_available_columns(_view_name, root)
 else:
+    def _cached_list_channel_impl(
+        _dv: str,
+        _h: str,
+        _channel_view: str,
+        _limit: int,
+        _state_json: str,
+        _root_str: str | None,
+    ) -> list[str]:
+        state = FilterState.from_dict(json.loads(_state_json))
+        root = Path(_root_str) if _root_str else None
+        return _impl_list_channel_values(state, root, _limit)
+
     def _cached_list_geo_impl(
         _dv: str,
         _h: str,
@@ -2830,6 +2871,27 @@ class DataGateway:
             "available_columns",
             lambda: _cached_available_columns_impl(dv, view_name, root_str),
         )
+
+    def list_channel_values(self, state: FilterState, limit: int = 200) -> list[str]:
+        """Distinct values for resolved channel column (date range + slice, excluding channel filter). Governed, cached."""
+        if APP_MOCK_DATA:
+            return ["Institutional", "Wholesale", "Retail", "Other"]
+        def _thunk() -> list[str]:
+            dv = _get_dataset_version_safe(self._root)
+            h = state.filter_state_hash()
+            state_json = json.dumps(state.to_dict(), sort_keys=True, separators=(",", ":"))
+            if st is not None:
+                cache_key = f"{dv}|{h}|list_channel_values|{state.channel_view}"
+                if CACHE_SEEN_KEY not in st.session_state:
+                    st.session_state[CACHE_SEEN_KEY] = []
+                seen = st.session_state[CACHE_SEEN_KEY]
+                if cache_key in seen:
+                    st.session_state[LAST_CACHE_STATUS_KEY] = "hit"
+                else:
+                    st.session_state[LAST_CACHE_STATUS_KEY] = "miss"
+                    seen.append(cache_key)
+            return _cached_list_channel_impl(dv, h, state.channel_view, limit, state_json, str(self._root))
+        return _governed_call("list_channel_values", _thunk)
 
     def list_geo_values(self, state: FilterState, limit: int = 200) -> list[str]:
         """Distinct values for resolved geo column (date range + slice, excluding geo filter). Governed, cached."""

@@ -1,4 +1,4 @@
-﻿"""
+"""
 Executive Dashboard tab: KPI + charts + drilldown wired to DataGateway. No groupby in page.
 Data: gateway only (no duckdb/parquet in pages).
 """
@@ -81,10 +81,6 @@ VIZ_QUERIES_KEY = "_viz_gateway_queries"
 
 # Dimension options for path/slice (fallback when contract has no list)
 DEFAULT_DIM_OPTIONS = ["channel", "country", "ticker", "segment", "sub_segment", "product_ticker"]
-
-# Slice value options (placeholder; in production could come from gateway)
-SLICE_VALUE_OPTIONS = ["All", "Institutional", "Wholesale", "Retail", "Other"]
-
 
 def build_ranked_channels(df: pd.DataFrame, metric: str, top_n: int = 25) -> pd.DataFrame:
     """
@@ -720,7 +716,7 @@ def render(state: FilterState, contract: dict[str, Any]) -> None:
 
     # Use state passed from app (single source of truth: st.session_state["filters"])
 
-    # ---- Path selector (drill path: display + reorder via multiselect) ----
+    # ---- Drill path (order); slice/filter is at top in "Explore Data" bar ----
     gf = (contract or {}).get("global_filters") or {}
     dp_cfg = gf.get("drill_path") or {}
     dim_options = (
@@ -736,49 +732,20 @@ def render(state: FilterState, contract: dict[str, Any]) -> None:
     if not current_path:
         current_path = dim_options[:3] if len(dim_options) >= 3 else dim_options
 
-    st.caption("Analysis path configuration")
-    new_path = st.multiselect(
-        "Drill path (order = hierarchy)",
-        options=dim_options,
-        default=current_path,
-        key="viz_drill_path",
-    )
-    if new_path and new_path != current_path:
-        update_filter_state(drill_path=new_path)
-        state = get_filter_state()
-    elif not new_path and current_path:
-        update_filter_state(drill_path=current_path)
-        state = get_filter_state()
-
-    # ---- Slice selector (active dimension + value); sync from state.slice ----
-    st.caption("Portfolio slice selector")
-    slice_dim_options = list(state.drill_path) if state.drill_path else dim_options[:4]
-    current_slice_dim = slice_dim_options[0] if slice_dim_options else "channel"
-    current_slice_val = "All"
-    if state.slice and ":" in state.slice:
-        parts = state.slice.split(":", 1)
-        if parts[0] in slice_dim_options:
-            current_slice_dim = parts[0]
-        if len(parts) > 1 and parts[1] in SLICE_VALUE_OPTIONS:
-            current_slice_val = parts[1]
-    dim_idx = slice_dim_options.index(current_slice_dim) if current_slice_dim in slice_dim_options else 0
-    val_idx = SLICE_VALUE_OPTIONS.index(current_slice_val) if current_slice_val in SLICE_VALUE_OPTIONS else 0
-    slice_dim = st.selectbox(
-        "Slice dimension",
-        options=slice_dim_options,
-        index=dim_idx,
-        key="viz_slice_dim",
-    )
-    slice_value = st.selectbox(
-        "Slice value",
-        options=SLICE_VALUE_OPTIONS,
-        index=val_idx,
-        key="viz_slice_value",
-    )
-    new_slice = f"{slice_dim}:{slice_value}" if slice_value and slice_value != "All" else (slice_dim if slice_dim else None)
-    if new_slice != state.slice:
-        update_filter_state(slice=new_slice)
-        state = get_filter_state()
+    with st.expander("Drill path (hierarchy order)", expanded=False):
+        st.caption("Analysis path configuration. Use «Explore Data» at the top to filter by Channel, Geography, Product, or Segment.")
+        new_path = st.multiselect(
+            "Drill path (order = hierarchy)",
+            options=dim_options,
+            default=current_path,
+            key="viz_drill_path",
+        )
+        if new_path and new_path != current_path:
+            update_filter_state(drill_path=new_path)
+            state = get_filter_state()
+        elif not new_path and current_path:
+            update_filter_state(drill_path=current_path)
+            state = get_filter_state()
 
     st.divider()
 

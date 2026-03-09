@@ -661,6 +661,29 @@ def _state_has_rows(state: FilterState, root: Path) -> bool:
     return False
 
 
+def get_dataset_date_bounds(root: str | Path | None = None) -> tuple[date | None, date | None]:
+    """
+    Return (min_date, max_date) from the dataset month_end range, or (None, None) if unavailable.
+    Use for date picker min_value/max_value so the UI only shows valid dates.
+    """
+    root_path = Path(root) if root is not None else Path(__file__).resolve().parents[1]
+    try:
+        from app.data_gateway import DataGateway
+
+        gw = DataGateway(root_path)
+        month_ends = _parse_month_end_values(gw.list_month_ends(None, view_name="v_firm_monthly", limit=None))
+    except Exception:
+        return (None, None)
+    if not month_ends:
+        return (None, None)
+    try:
+        min_d = date.fromisoformat(month_ends[0][:10])
+        max_d = date.fromisoformat(month_ends[-1][:10])
+        return (min_d, max_d)
+    except (ValueError, TypeError):
+        return (None, None)
+
+
 def resolve_best_default_filters(root: str | Path | None = None) -> FilterState:
     """
     Resolve curated startup defaults from available data.

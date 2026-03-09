@@ -18,7 +18,7 @@ from app.filters_contract import (
     load_filters_contract,
 )
 from app.filters_validation import validate_and_heal_filters
-from app.state import FilterState, get_filter_state, set_filter_state, update_filter_state
+from app.state import FilterState, get_dataset_date_bounds, get_filter_state, set_filter_state, update_filter_state
 
 # Session keys for persistence (prompt requirement)
 FILTERS_KEY = "filters"
@@ -132,6 +132,14 @@ def render_global_filters(gw: Any, contract: dict[str, Any] | None = None) -> Fi
 
     # (1) Date range (month_end aligned) + period_mode
     period_opts = _options_from_contract(filters_contract, "time", "period_mode", "enum") or FALLBACK_PERIOD_MODES
+    root = Path(__file__).resolve().parents[2]
+    min_date, max_date = get_dataset_date_bounds(root)
+    start_val = pd.Timestamp(state.date_start).date()
+    end_val = pd.Timestamp(state.date_end).date()
+    if min_date is not None and max_date is not None:
+        start_val = max(min_date, min(start_val, max_date))
+        end_val = max(min_date, min(end_val, max_date))
+    date_kwargs = {"min_value": min_date, "max_value": max_date} if (min_date is not None and max_date is not None) else {}
     with st.container():
         st.caption("Global filters")
 
@@ -139,14 +147,16 @@ def render_global_filters(gw: Any, contract: dict[str, Any] | None = None) -> Fi
         with col1:
             start_val = st.date_input(
                 "Date from",
-                value=pd.Timestamp(state.date_start).date(),
+                value=start_val,
                 key=f"{GF}_date_start",
+                **date_kwargs,
             )
         with col2:
             end_val = st.date_input(
                 "Date to",
-                value=pd.Timestamp(state.date_end).date(),
+                value=end_val,
                 key=f"{GF}_date_end",
+                **date_kwargs,
             )
         if start_val is not None and end_val is not None:
             start_iso = start_val.isoformat()

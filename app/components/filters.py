@@ -3,6 +3,7 @@ Sidebar global filter panel. Driven by app/config/filters.yml; all updates via u
 """
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import pandas as pd
@@ -12,7 +13,7 @@ from app.filters_contract import (
     is_optional_filter_enabled,
     load_filters_contract,
 )
-from app.state import FilterState, get_filter_state, update_filter_state
+from app.state import FilterState, get_dataset_date_bounds, get_filter_state, update_filter_state
 
 # Fallback dimension list when contract does not provide one
 DEFAULT_DRILL_DIMENSIONS = [
@@ -124,21 +125,32 @@ def render_sidebar_filters(
 
     st.caption("Global filters")
 
+    root = Path(__file__).resolve().parents[2]
+    min_date, max_date = get_dataset_date_bounds(root)
+    start_val = pd.Timestamp(state.date_start).date()
+    end_val = pd.Timestamp(state.date_end).date()
+    if min_date is not None and max_date is not None:
+        start_val = max(min_date, min(start_val, max_date))
+        end_val = max(min_date, min(end_val, max_date))
+    kwargs = {"min_value": min_date, "max_value": max_date} if (min_date is not None and max_date is not None) else {}
+
     # 1) Date range (start/end)
     col1, col2 = st.columns(2)
     with col1:
         st.date_input(
             "Date from",
-            value=pd.Timestamp(state.date_start).date(),
+            value=start_val,
             key="sidebar_date_start",
             on_change=_sync_dates,
+            **kwargs,
         )
     with col2:
         st.date_input(
             "Date to",
-            value=pd.Timestamp(state.date_end).date(),
+            value=end_val,
             key="sidebar_date_end",
             on_change=_sync_dates,
+            **kwargs,
         )
 
     # 2) Period mode (1M / QoQ / YTD / YoY)
