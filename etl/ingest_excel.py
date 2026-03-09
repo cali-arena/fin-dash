@@ -36,6 +36,7 @@ RAW_COLUMN_MAP = {
     "product_country": "product_country",
     "asset_under_management": "end_aum",
     "net_new_business": "nnb",
+    "net_flow": "net_flow",  # optional; used to fill nnb when nnb is blank/zero
     "net_new_base_fees": "nnf",
     "display_firm": "display_firm",
     "product_ticker": "product_ticker",
@@ -45,6 +46,7 @@ RAW_COLUMN_MAP = {
 }
 
 NUMERIC_COLUMNS = ["end_aum", "nnb", "nnf", "channel_best"]
+OPTIONAL_NUMERIC_FOR_NNB = ["net_flow"]  # parsed and used to fill nnb when nnb is missing/zero
 
 
 def _snake(name: str) -> str:
@@ -79,7 +81,9 @@ def _parse_number(value: Any) -> float:
     txt = str(value).strip()
     if txt == "" or txt.lower() in {"nan", "none", "null"}:
         return float("nan")
-    txt = txt.replace(",", "")
+    # Normalize common financial number decorations from source files.
+    txt = txt.replace(",", "").replace("$", "").replace("€", "").replace("£", "")
+    txt = txt.replace("\u00a0", "").replace(" ", "")
     neg = txt.startswith("(") and txt.endswith(")")
     if neg:
         txt = txt[1:-1]
@@ -115,6 +119,9 @@ def _normalize_raw(df: pd.DataFrame) -> pd.DataFrame:
         "sub_segment",
     ]
     missing = [c for c in required if c not in out.columns]
+    if "nnb" in missing and "net_flow" in out.columns:
+        out["nnb"] = out["net_flow"]
+        missing = [c for c in missing if c != "nnb"]
     if missing:
         raise ValueError(f"DATA RAW missing required canonical columns: {missing}")
 
@@ -122,6 +129,12 @@ def _normalize_raw(df: pd.DataFrame) -> pd.DataFrame:
     for c in NUMERIC_COLUMNS:
         if c in out.columns:
             out[c] = out[c].map(_parse_number).astype("float64")
+    for c in OPTIONAL_NUMERIC_FOR_NNB:
+        if c in out.columns:
+            out[c] = out[c].map(_parse_number).astype("float64")
+    if "net_flow" in out.columns and "nnb" in out.columns:
+        mask = out["nnb"].isna() | (out["nnb"].fillna(0) == 0)
+        out.loc[mask, "nnb"] = out.loc[mask, "net_flow"]
 
     for c in [
         "channel_raw",

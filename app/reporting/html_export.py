@@ -91,16 +91,39 @@ INLINE_CSS = """
 .report-container .meta-footer pre { background: #f5f5f5; padding: 0.75rem; overflow-x: auto; font-size: 0.8125rem; }
 """
 
+INLINE_CSS_DARK = """
+body { background: #0b132b; color: #f8fbff; }
+.report-container { max-width: 980px; margin: 0 auto; padding: 1rem; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; font-size: 16px; line-height: 1.5; color: #f8fbff; }
+.report-container h1 { font-size: 1.75rem; margin-bottom: 0.5rem; color: #f8fbff; }
+.report-container h2 { font-size: 1.25rem; margin-top: 1.5rem; margin-bottom: 0.5rem; color: #f8fbff; }
+.report-container ul { margin: 0.5rem 0 1rem 1.25rem; padding: 0; }
+.report-container li { margin: 0.25rem 0; color: #b7c5e3; }
+.report-container .report-table { width: 100%; border-collapse: collapse; font-size: 0.875rem; margin: 0.75rem 0; border: 1px solid #2a3d67; }
+.report-container .report-table th, .report-container .report-table td { border: 1px solid #2a3d67; padding: 0.35rem 0.5rem; text-align: left; background: #111d3a; color: #f8fbff; }
+.report-container .report-table th { background: #17284d; font-weight: 600; color: #b7c5e3; }
+.report-container .report-table tr:nth-child(even) td { background: #111d3a; }
+.report-container .report-table .num { text-align: right; }
+.report-container .table-empty { margin: 0.5rem 0; color: #b7c5e3; font-size: 0.875rem; }
+.report-container .meta-footer { margin-top: 2rem; padding-top: 1rem; border-top: 1px solid #2a3d67; font-size: 0.8125rem; color: #b7c5e3; }
+.report-container .meta-footer dt { font-weight: 600; margin-top: 0.35rem; }
+.report-container .meta-footer dd { margin-left: 0; }
+.report-container .meta-footer pre { background: #111d3a; padding: 0.75rem; overflow-x: auto; font-size: 0.8125rem; color: #b7c5e3; border: 1px solid #2a3d67; }
+"""
+
 
 def build_report_html(
     title: str,
     sections: list[tuple[str, SectionOutput]],
     meta: dict[str, Any],
+    *,
+    dark_theme: bool = True,
 ) -> str:
     """
     Build self-contained HTML report: inline CSS, H1, per-section H2 + bullets + table, footer (meta).
     Deterministic: stable table column order, no external assets, no JS.
+    dark_theme=True uses institutional dark styling to match the app.
     """
+    css = INLINE_CSS_DARK if dark_theme else INLINE_CSS
     parts = [
         "<!DOCTYPE html>",
         "<html lang=\"en\">",
@@ -108,7 +131,7 @@ def build_report_html(
         "<meta charset=\"utf-8\"/>",
         "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"/>",
         "<title>" + _escape(title) + "</title>",
-        "<style>" + INLINE_CSS + "</style>",
+        "<style>" + css + "</style>",
         "</head>",
         "<body>",
         "<div class=\"report-container\">",
@@ -124,7 +147,7 @@ def build_report_html(
         if out.table_title:
             parts.append("<p><strong>" + _escape(out.table_title) + "</strong></p>")
         tbl = out.table
-        if tbl is not None and not tbl.empty:
+        if tbl is not None and not getattr(tbl, "empty", True):
             tbl = format_df(tbl, infer_common_formats(tbl))
         parts.append(_table_to_html(tbl))
         parts.append("")

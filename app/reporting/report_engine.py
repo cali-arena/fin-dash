@@ -12,6 +12,14 @@ import pandas as pd
 
 from app.reporting.report_pack import ReportPack
 from app.reporting import rules
+from app.reporting.nlg_templates import (
+    select_anomaly_bullets,
+    select_executive_overview,
+    select_channel_commentary as nlg_channel,
+    select_product_commentary as nlg_product,
+    select_geo_commentary as nlg_geo,
+    select_recommendations as nlg_recommendations,
+)
 from app.ui.formatters import fmt_currency, fmt_number, fmt_percent
 
 # --- Constants (template / rule thresholds) ------------------------------------
@@ -80,9 +88,9 @@ def _rank_share_delta_cols(rank: pd.DataFrame) -> list[str]:
     return out if out else ["share_delta"]
 
 
-def _ensure_bullet_count(bullets: list[str], snap: dict[str, Any], fallback_templates: list[str]) -> list[str]:
-    """Cap at MAX_BULLETS; if fewer than MIN_BULLETS, append fallback bullets with numbers from snap."""
-    bullets = list(bullets)[:MAX_BULLETS]
+def _ensure_bullet_count(bullets: list[str], snap: dict[str, Any], fallback_templates: list[str], max_bullets: int = MAX_BULLETS) -> list[str]:
+    """Cap at max_bullets; if fewer than MIN_BULLETS, append fallback bullets with numbers from snap."""
+    bullets = list(bullets)[:max_bullets]
     snap = snap or {}
     kwargs = {"end_aum": _fmt_money(snap.get("end_aum")), "month_end": snap.get("month_end", "—")}
     for t in fallback_templates:
@@ -92,7 +100,7 @@ def _ensure_bullet_count(bullets: list[str], snap: dict[str, Any], fallback_temp
             bullets.append(t.format(**kwargs))
         except KeyError:
             bullets.append(t)
-    return bullets[:MAX_BULLETS]
+    return bullets[:max_bullets]
 
 
 # --- Section contract ---------------------------------------------------------
@@ -108,41 +116,14 @@ class SectionOutput:
 # --- Overview -----------------------------------------------------------------
 
 def render_overview(pack: ReportPack) -> SectionOutput:
-    """Overview: firm KPI headline, flows vs markets, fee yield if present. Table: Top Movers (Channels) by NNB."""
-    bullets: list[str] = []
-    meta: dict[str, Any] = {"source": "firm_snapshot, time_series", "thresholds_used": ["OGR_STRONG", "MKT_TAILWIND"]}
-    table = pd.DataFrame()
+    """Executive Overview: deterministic NLG from nlg_templates (no LLM). Table: Top Movers (Channels) by NNB."""
+    meta: dict[str, Any] = {"source": "firm_snapshot, time_series", "thresholds_used": ["OGR_STRONG", "MKT_TAILWIND"], "nlg": "nlg_templates.select_executive_overview"}
     table_title = "Top Movers (Channels)"
-    snap = pack.firm_snapshot
-    ts = pack.time_series
-    row = _safe_first_row(snap)
+    table = pd.DataFrame()
+    row = _safe_first_row(pack.firm_snapshot)
     if row:
-        end_aum = row.get("end_aum")
-        nnb = row.get("nnb")
-        mom_pct = row.get("mom_pct")
-        ytd_pct = row.get("ytd_pct")
-        ogr = row.get("ogr")
-        month_end = row.get("month_end")
-        market_rate = row.get("market_impact_rate") if "market_impact_rate" in row else None
-        try:
-            ogr_f = float(ogr) if ogr is not None and pd.notna(ogr) else float("nan")
-            mkt_f = float(market_rate) if market_rate is not None and pd.notna(market_rate) else float("nan")
-        except (TypeError, ValueError):
-            ogr_f, mkt_f = float("nan"), float("nan")
-
-        bullets.append(f"Month-end AUM: {_fmt_money(end_aum)} (as of {month_end}); MoM {_fmt_pct(mom_pct)}, YTD {_fmt_pct(ytd_pct)}. NNB {_fmt_money(nnb)}, OGR {_fmt_pct(ogr)}.")
-
-        if ogr_f > OGR_STRONG and mkt_f < MKT_HEADWIND_THRESHOLD:
-            bullets.append("Flows strong, markets headwind; growth driven by net new business.")
-        elif ogr_f < 0 and mkt_f > MKT_TAILWIND:
-            bullets.append("Flows weak, markets tailwind; AUM change largely from market move.")
-        else:
-            bullets.append(f"Flows {_fmt_pct(ogr)}; market impact rate {_fmt_pct(market_rate)}.")
-
-        if "fee_yield" in row and row.get("fee_yield") is not None and pd.notna(row.get("fee_yield")):
-            bullets.append(f"Fee yield: {_fmt_pct(row.get('fee_yield'))}.")
-
-        table = pd.DataFrame()
+        bullets = select_executive_overview(row, _fmt_money, _fmt_pct)
+        bullets = _ensure_bullet_count(bullets, row, ["Snapshot month: {month_end}.", "Firm AUM: {end_aum}."], max_bullets=8)
         ch = pack.channel_rank
         if ch is not None and not ch.empty:
             dim_col = _rank_dim_col(ch)
@@ -155,10 +136,8 @@ def render_overview(pack: ReportPack) -> SectionOutput:
                     table = ch.head(TOP_N + BOTTOM_N) if len(ch) else pd.DataFrame()
         if table.empty and ch is not None and not ch.empty:
             table = ch.head(TOP_N + BOTTOM_N)
-        bullets = _ensure_bullet_count(bullets, row, ["Snapshot month: {month_end}.", "Firm AUM: {end_aum}."])
     else:
-        bullets.append("No firm snapshot data available.")
-        bullets.append("Firm AUM: —. Run report with valid filters.")
+        bullets = ["No firm snapshot data available.", "Firm AUM: —. Run report with valid filters."]
     return SectionOutput(bullets=bullets, table_title=table_title, table=table, meta=meta)
 
 
@@ -230,6 +209,7 @@ def render_channel_commentary(pack: ReportPack) -> SectionOutput:
             bullets.append(f"Mix shift: {ch_name} share moved {_fmt_pct(delta)}.")
             break
 
+    bullets = nlg_channel(bullets, rank, snap, _fmt_money, _fmt_pct)
     bullets = _ensure_bullet_count(bullets, snap, ["Firm AUM: {end_aum}.", "Snapshot: {month_end}."])
     return SectionOutput(bullets=bullets, table_title=table_title, table=table, meta=meta)
 
@@ -305,6 +285,7 @@ def render_product_commentary(pack: ReportPack) -> SectionOutput:
                 r = top_etf.iloc[0]
                 bullets.append(f"Top ETF mover: {r.get(edim, '—')} ({_fmt_money(r.get(emetric))}).")
 
+    bullets = nlg_product(bullets, rank, _fmt_money, _fmt_pct)
     bullets = _ensure_bullet_count(bullets, snap, ["Firm AUM: {end_aum}.", "Snapshot: {month_end}."])
     return SectionOutput(bullets=bullets, table_title=table_title, table=table, meta=meta)
 
@@ -367,6 +348,7 @@ def render_geo_commentary(pack: ReportPack) -> SectionOutput:
             bullets.append(f"Mix shift: {r.get(dim_col, '—')} share moved {_fmt_pct(r.get(share_delta_col))}.")
             break
 
+    bullets = nlg_geo(bullets, rank, _fmt_pct)
     bullets = _ensure_bullet_count(bullets, snap, ["Firm AUM: {end_aum}.", "Snapshot: {month_end}."])
     return SectionOutput(bullets=bullets, table_title=table_title, table=table, meta=meta)
 
@@ -374,116 +356,59 @@ def render_geo_commentary(pack: ReportPack) -> SectionOutput:
 # --- Anomalies -----------------------------------------------------------------
 
 def render_anomalies(pack: ReportPack) -> SectionOutput:
-    """If empty: two bullets (none triggered + one from overview). Else: top 1–3 high-severity by severity then abs(zscore); each bullet metric, entity, zscore, value. Table: top 10."""
-    bullets: list[str] = []
-    meta: dict[str, Any] = {"source": "anomalies", "triggered_rules": [], "thresholds_used": []}
+    """Anomalies and Flags: deterministic bullets from nlg_templates.select_anomaly_bullets. Table: top 10."""
+    meta: dict[str, Any] = {"source": "anomalies", "triggered_rules": [], "thresholds_used": [], "nlg": "nlg_templates.select_anomaly_bullets"}
     anom = pack.anomalies
     snap = _safe_first_row(pack.firm_snapshot)
 
-    if anom is None or anom.empty:
-        bullets.append("No anomalies triggered under current thresholds.")
+    if anom is None or (hasattr(anom, "empty") and anom.empty):
+        bullets = select_anomaly_bullets(anom, _fmt_num)
         bullets = _ensure_bullet_count(bullets, snap, ["Firm snapshot month: {month_end}; AUM {end_aum}."])
-        table = pd.DataFrame(columns=anom.columns) if anom is not None and hasattr(anom, "columns") else pd.DataFrame()
+        table = pd.DataFrame(columns=anom.columns) if (anom is not None and hasattr(anom, "columns")) else pd.DataFrame()
         return SectionOutput(bullets=bullets, table_title="Anomalies (none)", table=table, meta=meta)
 
     table_title = "Anomalies (top 10)"
-    n = len(anom)
-    bullets.append(f"Total anomalies triggered: {n}.")
     if "rule_id" in anom.columns:
         meta["triggered_rules"] = anom["rule_id"].dropna().unique().tolist()
-
-    has_z = "zscore" in anom.columns
-    has_sev = "severity" in anom.columns
-    sev_order = {"high": 0, "medium": 1, "med": 1, "low": 2}
-    sorted_anom = anom
-    if has_sev and has_z:
-        sorted_anom = anom.copy()
-        sorted_anom["_sev_ord"] = sorted_anom["severity"].map(sev_order).fillna(1)
-        sorted_anom["_abs_z"] = sorted_anom["zscore"].abs()
-        sorted_anom = sorted_anom.sort_values(by=["_sev_ord", "_abs_z"], ascending=[True, False]).drop(columns=["_sev_ord", "_abs_z"], errors="ignore")
-    elif has_sev:
-        sorted_anom = anom.copy()
-        sorted_anom["_sev_ord"] = sorted_anom["severity"].map(sev_order).fillna(1)
-        sorted_anom = sorted_anom.sort_values(by=["_sev_ord"], ascending=[True]).drop(columns=["_sev_ord"], errors="ignore")
-    elif has_z:
-        sorted_anom = anom.copy()
-        sorted_anom["_abs_z"] = sorted_anom["zscore"].abs()
-        sorted_anom = sorted_anom.sort_values(by=["_abs_z"], ascending=[False]).drop(columns=["_abs_z"], errors="ignore")
-    top_anom = sorted_anom.head(3)
-    for _, r in top_anom.iterrows():
-        metric = r.get("metric", "—")
-        entity = r.get("entity", "—")
-        zscore = r.get("zscore")
-        val = r.get("value_current")
-        bullets.append(f"{metric} ({entity}): z={_fmt_num(zscore)}, value={_fmt_num(val)}.")
-    table = anom.head(10)
+    bullets = select_anomaly_bullets(anom, _fmt_num)
     bullets = _ensure_bullet_count(bullets, snap, ["Snapshot: {month_end}.", "Firm AUM: {end_aum}."])
-    return SectionOutput(bullets=bullets, table_title=table_title, table=table, meta=meta)
+    return SectionOutput(bullets=bullets, table_title=table_title, table=anom.head(10), meta=meta)
 
 
 # --- Recommendations ----------------------------------------------------------
 
 def render_recommendations(pack: ReportPack) -> SectionOutput:
-    """Deterministic actions from anomalies and mix shift only: strong flows + negative markets, mix shift by channel, high-severity ticker. Cap 5. Table: triggered anomalies or mix shift."""
-    bullets: list[str] = []
-    meta: dict[str, Any] = {"source": "anomalies, channel/ticker/geo rank mix shift", "thresholds_used": []}
+    """Recommendations: deterministic from nlg_templates.select_recommendations (no LLM). What should we do next?"""
+    meta: dict[str, Any] = {"source": "anomalies, channel/ticker/geo rank mix shift", "thresholds_used": [f"MIX_SHIFT_THRESHOLD={MIX_SHIFT_THRESHOLD}"], "nlg": "nlg_templates.select_recommendations"}
     table_title = "Recommendations"
-    anom = pack.anomalies
     snap = _safe_first_row(pack.firm_snapshot)
-    row = snap
-
-    ogr_f = float("nan")
     mkt_neg = False
-    if row:
-        try:
-            ogr_f = float(row.get("ogr")) if row.get("ogr") is not None and pd.notna(row.get("ogr")) else float("nan")
-        except (TypeError, ValueError):
-            pass
-        rate = row.get("market_impact_rate")
-        abs_val = row.get("market_impact_abs")
+    if snap:
+        rate = snap.get("market_impact_rate")
+        abs_val = snap.get("market_impact_abs")
         if rate is not None and pd.notna(rate) and float(rate) < 0:
             mkt_neg = True
         elif abs_val is not None and pd.notna(abs_val) and float(abs_val) < 0:
             mkt_neg = True
-
-    if ogr_f > OGR_STRONG and mkt_neg:
-        bullets.append("Review hedging / risk messaging (strong flows, negative markets).")
-
-    for rank, level_name in [(pack.channel_rank, "channel"), (pack.ticker_rank, "ticker"), (pack.geo_rank, "geo")]:
-        if rank is None or rank.empty:
-            continue
-        dim_col = _rank_dim_col(rank)
-        for share_delta_col in _rank_share_delta_cols(rank):
-            if share_delta_col not in rank.columns:
-                continue
-            try:
-                shifted = rules.detect_mix_shift(rank, share_delta_col, MIX_SHIFT_THRESHOLD, dim_col, caller="render_recommendations")
-            except ValueError:
-                shifted = pd.DataFrame()
-            if not shifted.empty:
-                r = shifted.iloc[0]
-                name = r.get(dim_col, "—")
-                bullets.append(f"Allocate sales focus to {name} (significant {level_name} mix shift).")
-                meta["thresholds_used"] = list(set(meta["thresholds_used"] + [f"MIX_SHIFT_THRESHOLD={MIX_SHIFT_THRESHOLD}"]))
-                break
-
-    if anom is not None and not anom.empty and "severity" in anom.columns and "entity" in anom.columns:
-        high_anom = anom[anom["severity"] == "high"]
-        ticker_high = high_anom[high_anom["level"] == "ticker"] if "level" in anom.columns else high_anom
-        if not ticker_high.empty:
-            e = ticker_high.iloc[0].get("entity", "—")
-            bullets.append(f"Investigate {e} driver: flows vs pricing.")
-        elif not high_anom.empty:
-            e = high_anom.iloc[0].get("entity", "—")
-            bullets.append(f"Investigate {e} (high-severity anomaly).")
-
-    bullets = bullets[:MAX_BULLETS]
+    bullets = nlg_recommendations(pack, snap or {}, _fmt_pct, OGR_STRONG, mkt_neg)
     table = pd.DataFrame()
-    if anom is not None and not anom.empty:
-        table = anom.head(10)
-    else:
+    anom = getattr(pack, "anomalies", None)
+    anom_empty = True
+    if anom is not None:
+        try:
+            anom_empty = bool(getattr(anom, "empty", True))
+        except Exception:
+            anom_empty = True
+    anom_cols = getattr(anom, "columns", None)
+    has_anom_columns = anom_cols is not None and len(anom_cols) > 0
+    if anom is not None and (not anom_empty) and has_anom_columns and hasattr(anom, "head"):
+        try:
+            table = anom.head(10)
+        except Exception:
+            table = pd.DataFrame()
+    if table.empty:
         for rank in (pack.channel_rank, pack.ticker_rank, pack.geo_rank):
-            if rank is None or rank.empty:
+            if rank is None or getattr(rank, "empty", True):
                 continue
             dim_col = _rank_dim_col(rank)
             for share_delta_col in _rank_share_delta_cols(rank):
@@ -495,7 +420,4 @@ def render_recommendations(pack: ReportPack) -> SectionOutput:
                     shifted = pd.DataFrame()
                 if not shifted.empty and (table.empty or len(shifted) > len(table)):
                     table = shifted.head(10)
-    if bullets == []:
-        bullets.append("No recommendations triggered by anomalies or mix shift.")
-        bullets = _ensure_bullet_count(bullets, snap, ["Firm AUM: {end_aum}.", "Snapshot: {month_end}."])
     return SectionOutput(bullets=bullets, table_title=table_title, table=table, meta=meta)

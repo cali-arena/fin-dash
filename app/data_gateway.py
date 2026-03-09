@@ -177,7 +177,8 @@ FIRM_REQUIRED_COLUMNS = [
 FIRM_OPTIONAL_COLUMNS = ["market_impact", "fee_yield", "market_pnl"]
 FIRM_LOAD_COLUMNS = FIRM_REQUIRED_COLUMNS + FIRM_OPTIONAL_COLUMNS
 CHANNEL_REQUIRED_COLUMNS = FIRM_REQUIRED_COLUMNS + ["channel"]
-CHANNEL_LOAD_COLUMNS = CHANNEL_REQUIRED_COLUMNS + FIRM_OPTIONAL_COLUMNS
+CHANNEL_OPTIONAL_DIMS = ["sub_channel"]
+CHANNEL_LOAD_COLUMNS = CHANNEL_REQUIRED_COLUMNS + CHANNEL_OPTIONAL_DIMS + FIRM_OPTIONAL_COLUMNS
 TICKER_REQUIRED_COLUMNS = FIRM_REQUIRED_COLUMNS + ["ticker"]
 TICKER_LOAD_COLUMNS = TICKER_REQUIRED_COLUMNS + FIRM_OPTIONAL_COLUMNS
 GEO_REQUIRED_COLUMNS = FIRM_REQUIRED_COLUMNS + ["geo"]
@@ -199,8 +200,26 @@ KNOWN_MONTH_END_ALIASES = (
     "as_of_date",
 )
 
+# Flow/AUM aliases: raw data may use net_flow, flow, subscriptions/redemptions, opening_aum, etc.
+FLOW_NNB_ALIASES = (
+    "nnb",
+    "net_flow",
+    "net_flows",
+    "flow",
+    "flows",
+    "net_new_business",
+    "subscriptions_minus_redemptions",
+)
+BEGIN_AUM_ALIASES = ("begin_aum", "beginning_aum", "opening_aum", "start_aum", "prior_aum", "aum_start")
+END_AUM_ALIASES = ("end_aum", "ending_aum", "closing_aum", "aum_end")
+
 FIRM_COLUMN_ALIASES: dict[str, tuple[str, ...]] = {
     "month_end": KNOWN_MONTH_END_ALIASES,
+    "nnb": FLOW_NNB_ALIASES,
+    "begin_aum": BEGIN_AUM_ALIASES,
+    "end_aum": END_AUM_ALIASES,
+    "nnf": ("nnf", "net_net_flow", "net_fee_flow", "fee_flow", "fees"),
+    "market_impact_abs": ("market_impact_abs", "market_pnl", "market_impact", "market_movement"),
 }
 CHANNEL_COLUMN_ALIASES: dict[str, tuple[str, ...]] = {
     "month_end": KNOWN_MONTH_END_ALIASES,
@@ -212,11 +231,24 @@ CHANNEL_COLUMN_ALIASES: dict[str, tuple[str, ...]] = {
         "channel_best",
         "canonical_channel",
         "standard_channel",
+        "channel_raw",
     ),
+    "nnb": FLOW_NNB_ALIASES,
+    "begin_aum": BEGIN_AUM_ALIASES,
+    "end_aum": END_AUM_ALIASES,
+    "nnf": ("nnf", "net_net_flow", "net_fee_flow", "fee_flow", "fees"),
+    "market_impact_abs": ("market_impact_abs", "market_pnl", "market_impact", "market_movement"),
+    "sub_channel": ("channel_l2", "sub_channel", "channel_2"),
 }
 TICKER_COLUMN_ALIASES: dict[str, tuple[str, ...]] = {
     "month_end": KNOWN_MONTH_END_ALIASES,
-    "ticker": ("product_ticker", "ticker_symbol", "symbol"),
+    "ticker": ("product_ticker", "ticker_symbol", "symbol", "ticker"),
+    "product_ticker": ("product_ticker", "ticker_symbol", "symbol", "ticker"),
+    "nnb": FLOW_NNB_ALIASES,
+    "begin_aum": BEGIN_AUM_ALIASES,
+    "end_aum": END_AUM_ALIASES,
+    "nnf": ("nnf", "net_net_flow", "net_fee_flow", "fee_flow", "fees"),
+    "market_impact_abs": ("market_impact_abs", "market_pnl", "market_impact", "market_movement"),
 }
 GEO_COLUMN_ALIASES: dict[str, tuple[str, ...]] = {
     "month_end": KNOWN_MONTH_END_ALIASES,
@@ -228,11 +260,19 @@ GEO_COLUMN_ALIASES: dict[str, tuple[str, ...]] = {
         "country",
         "region",
     ),
+    "nnb": FLOW_NNB_ALIASES,
+    "begin_aum": BEGIN_AUM_ALIASES,
+    "end_aum": END_AUM_ALIASES,
+    "nnf": ("nnf", "net_net_flow", "net_fee_flow", "fee_flow", "fees"),
 }
 SEGMENT_COLUMN_ALIASES: dict[str, tuple[str, ...]] = {
     "month_end": KNOWN_MONTH_END_ALIASES,
     "segment": ("segment_name",),
     "sub_segment": ("subsegment", "sub_segment_name"),
+    "nnb": FLOW_NNB_ALIASES,
+    "begin_aum": BEGIN_AUM_ALIASES,
+    "end_aum": END_AUM_ALIASES,
+    "nnf": ("nnf", "net_net_flow", "net_fee_flow", "fee_flow", "fees"),
 }
 
 
@@ -334,6 +374,177 @@ def validate_required_columns(
         )
 
 
+def _derive_nnb_from_flows(out: pd.DataFrame) -> None:
+    """
+    When nnb is missing, all null, or all zero, derive from net_flow or subscriptions - redemptions.
+    Client: NNB = sum of net flows; net_flow column or (subscriptions - redemptions) is the source.
+    Modifies out in place.
+    """
+    if out is None or out.empty:
+        return
+    if "nnb" not in out.columns:
+        out["nnb"] = pd.NA
+    nnb_series = pd.to_numeric(out["nnb"], errors="coerce")
+    missing_or_zero = nnb_series.isna() | (nnb_series.fillna(0) == 0)
+    if "net_flow" in out.columns:
+        flow_series = pd.to_numeric(out["net_flow"], errors="coerce")
+        out.loc[missing_or_zero, "nnb"] = flow_series.loc[missing_or_zero]
+        nnb_series = pd.to_numeric(out["nnb"], errors="coerce")
+        missing_or_zero = nnb_series.isna() | (nnb_series.fillna(0) == 0)
+        if not bool(missing_or_zero.all()):
+            return
+    # Some sources provide an explicit market-impact column but not NNB.
+    if all(c in out.columns for c in ("end_aum", "begin_aum")):
+        mi_col = None
+        for c in ("market_impact_abs", "market_pnl", "market_impact"):
+            if c in out.columns:
+                mi_col = c
+                break
+        end = pd.to_numeric(out["end_aum"], errors="coerce")
+        begin = pd.to_numeric(out["begin_aum"], errors="coerce")
+        if mi_col is not None:
+            mi = pd.to_numeric(out[mi_col], errors="coerce")
+            nnb_from_mi = end - begin - mi
+            nnb_fallback = end - begin
+            candidate = nnb_from_mi.where(mi.notna(), nnb_fallback)
+            out.loc[missing_or_zero, "nnb"] = candidate.loc[missing_or_zero]
+            return
+        # Last-resort fallback when source does not provide NNB or market leg.
+        # Keeps cards/charts operational while preserving AUM reconciliation.
+        out.loc[missing_or_zero, "nnb"] = (end - begin).loc[missing_or_zero]
+        return
+    subs_col = None
+    red_col = None
+    for c in out.columns:
+        c_lower = str(c).strip().lower()
+        if c_lower in ("subscriptions", "subscription", "inflows"):
+            subs_col = c
+        if c_lower in ("redemptions", "redemption", "outflows"):
+            red_col = c
+    if subs_col and red_col:
+        out["nnb"] = pd.to_numeric(out[subs_col], errors="coerce") - pd.to_numeric(out[red_col], errors="coerce")
+    elif "nnb" not in out.columns:
+        out["nnb"] = pd.NA
+    return
+
+
+# Monthly query names that get canonicalization (same metrics pack for cards, charts, report, ETF).
+_MONTHLY_QUERIES = frozenset({
+    Q_FIRM_MONTHLY,
+    Q_CHANNEL_MONTHLY,
+    Q_TICKER_MONTHLY,
+    Q_GEO_MONTHLY,
+    Q_SEGMENT_MONTHLY,
+})
+
+_ALIAS_MAP_BY_QUERY: dict[str, dict[str, tuple[str, ...]]] = {
+    Q_FIRM_MONTHLY: FIRM_COLUMN_ALIASES,
+    Q_CHANNEL_MONTHLY: CHANNEL_COLUMN_ALIASES,
+    Q_TICKER_MONTHLY: TICKER_COLUMN_ALIASES,
+    Q_GEO_MONTHLY: GEO_COLUMN_ALIASES,
+    Q_SEGMENT_MONTHLY: SEGMENT_COLUMN_ALIASES,
+}
+
+
+def _ensure_begin_aum(out: pd.DataFrame, dim_cols: list[str]) -> None:
+    """When begin_aum is missing or all null, set from end_aum shift(1) per group. Modifies out in place."""
+    if out is None or out.empty or "end_aum" not in out.columns:
+        return
+    need_begin = "begin_aum" not in out.columns or out["begin_aum"].isna().all()
+    if not need_begin:
+        return
+    group_cols = [c for c in dim_cols if c in out.columns]
+    if group_cols:
+        out["begin_aum"] = out.groupby(group_cols)["end_aum"].shift(1)
+    else:
+        out["begin_aum"] = out["end_aum"].shift(1)
+    return
+
+
+def _compute_derived_metrics(out: pd.DataFrame) -> None:
+    """Fill market_impact, ogr, market_impact_rate from canonical formulas. Modifies out in place."""
+    if out is None or out.empty:
+        return
+    need_mi = "market_impact" not in out.columns or out["market_impact"].isna().all()
+    if need_mi and all(c in out.columns for c in ("end_aum", "begin_aum", "nnb")):
+        out["market_impact"] = (
+            pd.to_numeric(out["end_aum"], errors="coerce")
+            - pd.to_numeric(out["begin_aum"], errors="coerce")
+            - pd.to_numeric(out["nnb"], errors="coerce")
+        )
+    if "ogr" not in out.columns or out["ogr"].isna().all():
+        if "nnb" in out.columns and "begin_aum" in out.columns:
+            b = pd.to_numeric(out["begin_aum"], errors="coerce")
+            n = pd.to_numeric(out["nnb"], errors="coerce")
+            out["ogr"] = n / b.replace(0, float("nan"))
+    if "market_impact_rate" not in out.columns or out["market_impact_rate"].isna().all():
+        if "market_impact" in out.columns and "begin_aum" in out.columns:
+            mi = pd.to_numeric(out["market_impact"], errors="coerce")
+            b = pd.to_numeric(out["begin_aum"], errors="coerce")
+            out["market_impact_rate"] = mi / b.replace(0, float("nan"))
+    return
+
+
+def _clean_dimension_labels(out: pd.DataFrame) -> None:
+    """Replace raw numeric labels (e.g. 1.0) with human-readable strings. Modifies out in place."""
+    if out is None or out.empty:
+        return
+    dim_cols = ["channel", "sub_channel", "product_ticker", "ticker", "geo", "segment", "sub_segment", "src_country"]
+    prefix_by_col = {"channel": "Channel ", "sub_channel": "Sub-channel ", "segment": "Segment ", "sub_segment": "Sub-segment ", "geo": "Geo ", "src_country": "Country "}
+    for col in dim_cols:
+        if col not in out.columns:
+            continue
+        s = out[col]
+        if pd.api.types.is_numeric_dtype(s):
+            prefix = prefix_by_col.get(col, "")
+            out[col] = s.apply(
+                lambda x, p=prefix: (p + str(int(x)) if pd.notna(x) and x == x else "")
+            )
+        else:
+            txt = s.astype(str).str.strip().replace("nan", "").replace("None", "")
+            prefix = prefix_by_col.get(col, "")
+            if prefix:
+                numeric_like = txt.str.fullmatch(r"\d+(?:\.0+)?").fillna(False)
+                if bool(numeric_like.any()):
+                    txt = txt.where(~numeric_like, txt.str.replace(r"\.0+$", "", regex=True).radd(prefix))
+            out[col] = txt
+    return
+
+
+def _canonicalize_monthly_for_ui(df: pd.DataFrame, query_name: str) -> pd.DataFrame:
+    """
+    Single canonical metrics pack for cards, charts, report, ETF drill-down.
+    Applies alias mapping, derives NNB, ensures begin_aum, computes market_impact/ogr/rate, cleans labels.
+    Does not validate required columns (parquet/views may have varying schemas).
+    """
+    if df is None or df.empty:
+        return df if df is not None else pd.DataFrame()
+    out = df.copy()
+    alias_map = _ALIAS_MAP_BY_QUERY.get(query_name)
+    if alias_map:
+        out = _normalize_alias_columns(out, alias_map)
+    _derive_nnb_from_flows(out)
+    dim_cols = []
+    if query_name == Q_CHANNEL_MONTHLY:
+        dim_cols = ["channel"]
+    elif query_name == Q_TICKER_MONTHLY:
+        dim_cols = ["product_ticker", "ticker"]
+    elif query_name == Q_GEO_MONTHLY:
+        dim_cols = ["geo", "src_country"]
+    elif query_name == Q_SEGMENT_MONTHLY:
+        dim_cols = ["segment", "sub_segment"]
+    if "month_end" in out.columns:
+        out["month_end"] = pd.to_datetime(out["month_end"], errors="coerce")
+        out = out.sort_values("month_end").reset_index(drop=True)
+    _ensure_begin_aum(out, dim_cols)
+    for c in ("begin_aum", "end_aum", "nnb", "nnf"):
+        if c in out.columns:
+            out[c] = pd.to_numeric(out[c], errors="coerce")
+    _compute_derived_metrics(out)
+    _clean_dimension_labels(out)
+    return _coerce_inf_to_nan(out)
+
+
 def _prepare_monthly_dataset(
     df: pd.DataFrame,
     dataset_name: str,
@@ -343,6 +554,7 @@ def _prepare_monthly_dataset(
 ) -> pd.DataFrame:
     """
     Normalize aliases and validate required schema once at loader boundary.
+    Derives NNB from subscriptions - redemptions when nnb is missing.
     Missing optional columns are added as NA so downstream code can stay deterministic.
     """
     if df is None:
@@ -350,6 +562,7 @@ def _prepare_monthly_dataset(
     out = _normalize_alias_columns(df, alias_map)
     if out.empty:
         return pd.DataFrame(columns=output_cols)
+    _derive_nnb_from_flows(out)
     validate_required_columns(out, required_cols, dataset_name)
     for col in output_cols:
         if col not in out.columns:
@@ -420,6 +633,16 @@ def get_config(root: Path | None = None) -> dict[str, Any]:
         return {
             "db_path": db_path,
             "schema": os.environ.get("DUCKDB_SCHEMA", "data").strip(),
+            "dataset_version": "unknown",
+            "policy_hash": "",
+            "created_at": "",
+        }
+    # Local rebuilt analytics database fallback (used when manifest files are locked/stale).
+    rebuilt_db = root / "analytics_fixed.duckdb"
+    if rebuilt_db.exists():
+        return {
+            "db_path": str(rebuilt_db.resolve()),
+            "schema": "data",
             "dataset_version": "unknown",
             "policy_hash": "",
             "created_at": "",
@@ -1371,7 +1594,10 @@ def _run_query_uncached(
         config = get_config(root)
         where_sql, params = build_where(filter_state)
         sql = _view_sql(config["schema"], view_name, where_sql, columns=columns)
-        return query_df(sql, params=params, _config=config)
+        df = query_df(sql, params=params, _config=config)
+        if query_name in _MONTHLY_QUERIES:
+            df = _canonicalize_monthly_for_ui(df, query_name)
+        return df
 
     # Parquet fallback
     if st is not None:
@@ -1381,7 +1607,10 @@ def _run_query_uncached(
         raise ValueError(
             f"Parquet fallback but no parquet_table for query {query_name!r}. Add to QUERY_SPECS."
         )
-    return _load_parquet_with_filters(parquet_table, filter_state, root, columns)
+    df = _load_parquet_with_filters(parquet_table, filter_state, root, columns)
+    if query_name in _MONTHLY_QUERIES:
+        df = _canonicalize_monthly_for_ui(df, query_name)
+    return df
 
 
 def _cached_run_query_impl(
@@ -3080,10 +3309,14 @@ def prepare_growth_quality_dataset(df: pd.DataFrame | None, view: str = "channel
 
 
 def _governed_firm_snapshot_impl(state_json: str, root_str: str) -> pd.DataFrame:
-    """Uncached: load firm monthly and return as firm snapshot dataframe."""
+    """Uncached: load firm monthly, build canonical one-row snapshot (all derived metrics). Single source of truth for KPIs and header AUM."""
     state = FilterState.from_dict(json.loads(state_json))
+    root = Path(root_str)
     try:
-        return _load_firm_monthly(state, Path(root_str))
+        firm_df = _load_firm_monthly(state, root)
+        period_frames = _build_period_frames(firm_df)
+        snapshot_df, _ = _build_firm_snapshot_canonical(firm_df, period_frames, {})
+        return snapshot_df if snapshot_df is not None else pd.DataFrame()
     except SchemaError as exc:
         logger.error(str(exc))
         return pd.DataFrame(columns=FIRM_LOAD_COLUMNS)
@@ -3762,8 +3995,9 @@ def _build_firm_snapshot_canonical(
 ) -> tuple[pd.DataFrame, dict[str, Any]]:
     """Single row: end_aum, begin_aum, mom_pct, ytd_pct, nnb, ogr, market_impact_abs, market_impact_rate, fee_yield.
     Firm grain only (no slice leakage): inputs are already firm-level; compare only to firm checksum (e.g. DATA SUMMARY).
-    Defensive: prior missing -> mom/ogr/rates NaN and note in meta."""
+    Defensive: prior missing -> mom/ogr/rates NaN and note in meta. Market P&L never blank when end_aum/nnb exist (first month: begin_aum=0)."""
     from app.metrics.metric_contract import (
+        coerce_num,
         compute_fee_yield,
         compute_market_impact,
         compute_market_impact_rate,
@@ -3823,9 +4057,12 @@ def _build_firm_snapshot_canonical(
             prior_end = same_month_prior["end_aum"].sum()
             if prior_end and prior_end == prior_end and prior_end > 0:
                 yoy_pct = (end_aum - prior_end) / prior_end
+    # Canonical formulas: always compute market_pnl so it is never blank when end_aum/nnb exist.
     mi_abs = compute_market_impact(begin_aum, end_aum, nnb)
+    if prior_missing and (end_aum == end_aum and nnb == nnb):
+        mi_abs = coerce_num(end_aum) - 0.0 - coerce_num(nnb)
     ogr = compute_ogr(nnb, begin_aum) if (not prior_missing and begin_aum == begin_aum and begin_aum and begin_aum > 0) else float("nan")
-    mi_rate = compute_market_impact_rate(mi_abs, begin_aum) if (not prior_missing and begin_aum == begin_aum and begin_aum and begin_aum > 0) else float("nan")
+    mi_rate = compute_market_impact_rate(mi_abs, begin_aum) if (begin_aum == begin_aum and begin_aum and begin_aum > 0) else float("nan")
     fee_yield = float("nan")
     has_nnf = "nnf" in df.columns
     if has_nnf:

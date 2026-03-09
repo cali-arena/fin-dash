@@ -140,6 +140,17 @@ def compute_fee_yield(
     return coerce_num(base)
 
 
+def compute_fee_yield_nnf_nnb(nnf: Any, nnb: Any) -> float:
+    """
+    Client formula: Fee Yield = NNF / NNB.
+    Returns NaN on divide-by-zero (NNB missing or <= 0). No annualization.
+    """
+    n = coerce_num(nnb)
+    if math.isnan(n) or n <= 0:
+        return NAN
+    return safe_divide(nnf, nnb)
+
+
 @dataclass
 class MetricRow:
     """One row of metrics: inputs plus derived fields from canonical formulas."""

@@ -27,7 +27,7 @@ PAGE_RENDERERS = {
 TAB_LABELS = {
     "visualisations": "Executive Dashboard",
     "dynamic_report": "Investment Commentary",
-    "nlq_chat": "Guided Analytics",
+    "nlq_chat": "Intelligence Desk",
 }
 
 
@@ -52,7 +52,7 @@ def main() -> None:
     tabs = contract.get("tabs") or ["visualisations", "dynamic_report", "nlq_chat"]
     inject_global_theme_css()
 
-    st.title("Investment Intelligence Dashboard")
+    st.title("AI infin8 | Institutional Asset Management Intelligence")
     render_global_filters()
     state = get_filter_state()
 

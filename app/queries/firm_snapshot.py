@@ -625,6 +625,65 @@ else:
     _cached_firm_snapshot = _cached_firm_snapshot_impl
 
 
+def payload_from_canonical_row(
+    row: pd.Series | dict[str, Any],
+    trend_df: pd.DataFrame | None = None,
+) -> dict[str, Any]:
+    """
+    Build KPI payload from a single canonical snapshot row (from gateway _build_firm_snapshot_canonical).
+    Single source of truth: header AUM and KPI strip use this. trend_df optional for sparkline (last 12 months).
+    """
+    nan = np.nan
+
+    def _f(k: str) -> float:
+        v = row.get(k, nan) if isinstance(row, dict) else (row.get(k, nan) if hasattr(row, "get") else nan)
+        try:
+            v = float(v)
+        except (TypeError, ValueError):
+            return nan
+        return v if math.isfinite(v) else nan
+
+    raw = {
+        "end_aum": _f("end_aum"),
+        "mom_growth": _f("mom_pct"),
+        "ytd_growth": _f("ytd_pct"),
+        "nnb": _f("nnb"),
+        "nnf": _f("nnf"),
+        "ogr": _f("ogr"),
+        "market_impact": _f("market_impact_rate"),
+        "market_pnl": _f("market_impact_abs"),
+    }
+    kpis = build_kpi_strip(raw, deltas=None)
+
+    month_end = row.get("month_end") if isinstance(row, dict) else getattr(row, "month_end", None)
+    latest_iso = _to_iso(month_end)
+
+    series = {"month_end": [], "end_aum": []}
+    if trend_df is not None and not trend_df.empty and "month_end" in trend_df.columns and "end_aum" in trend_df.columns:
+        tail = trend_df.sort_values("month_end", ascending=True).tail(12)
+        series["month_end"] = [_to_iso(t) for t in tail["month_end"].tolist()]
+        try:
+            vals = [float(pd.to_numeric(x, errors="coerce")) for x in tail["end_aum"].tolist()]
+            series["end_aum"] = [x if math.isfinite(x) else np.nan for x in vals]
+        except Exception:
+            series["end_aum"] = []
+
+    return {
+        "kpis": kpis,
+        "context": {
+            "latest_month_end": latest_iso,
+            "prev_month_end": None,
+            "ytd_start_month_end": None,
+        },
+        "raw": raw,
+        "series": series,
+        "_qa": {},
+        "rates_not_computable_reason": None,
+        "coverage_incomplete": False,
+        "validation_skip_reason": None,
+    }
+
+
 def get_firm_snapshot_cached(
     months: int,
     dataset_version: str,

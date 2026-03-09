@@ -52,10 +52,13 @@ def build_explain_payload(
 
 def llm_explain(payload: dict[str, Any]) -> str:
     """
-    Stub: call LLM if configured; otherwise return "".
-    When implementing: instruct "Use ONLY the provided payload. Do NOT add new numbers or facts. If unsure, say you cannot infer."
+    Call Claude for narrative only when API key is set. Claude receives verified payload only; no calculations, no raw internal data.
     """
-    return ""
+    try:
+        from app.llm.claude import claude_narrative_from_payload
+        return (claude_narrative_from_payload(payload) or "").strip()
+    except Exception:
+        return ""
 
 
 # Regex: ints, floats, percentages (12%, -0.5%), currency-like (1,234.56 or $1.23)

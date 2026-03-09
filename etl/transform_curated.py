@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 from pathlib import Path
 
 import pandas as pd
@@ -14,13 +15,23 @@ def _clean_text(s: pd.Series) -> pd.Series:
     return s.astype(str).str.strip().replace({"nan": "", "None": ""})
 
 
+def _is_code_like_text(s: pd.Series) -> pd.Series:
+    """
+    True for code-like numeric labels such as '1', '1.0', '02'.
+    These are not client-facing business channel labels.
+    """
+    txt = s.astype(str).str.strip()
+    return txt.str.fullmatch(r"\d+(?:\.0+)?").fillna(False)
+
+
 def _build_mapping(raw_df: pd.DataFrame) -> pd.DataFrame:
     combos = (
         raw_df[["channel_raw", "channel_standard", "channel_best"]]
         .drop_duplicates()
         .copy()
     )
-    combos["channel"] = combos["channel_best"].where(combos["channel_best"].ne(""), combos["channel_standard"])
+    use_best = combos["channel_best"].ne("") & ~_is_code_like_text(combos["channel_best"])
+    combos["channel"] = combos["channel_best"].where(use_best, combos["channel_standard"])
     combos["channel"] = combos["channel"].where(combos["channel"].ne(""), combos["channel_raw"])
     combos["mapping_source"] = "best>standard>raw"
     return combos
@@ -32,7 +43,8 @@ def _apply_mapping(raw_df: pd.DataFrame, mapping_df: pd.DataFrame) -> pd.DataFra
         on=["channel_raw", "channel_standard", "channel_best"],
         how="left",
     )
-    out["channel"] = out["channel"].where(out["channel"].notna() & out["channel"].ne(""), out["channel_best"])
+    use_best = out["channel_best"].notna() & out["channel_best"].ne("") & ~_is_code_like_text(out["channel_best"])
+    out["channel"] = out["channel"].where(out["channel"].notna() & out["channel"].ne(""), out["channel_best"].where(use_best, ""))
     out["channel"] = out["channel"].where(out["channel"].notna() & out["channel"].ne(""), out["channel_standard"])
     out["channel"] = out["channel"].where(out["channel"].notna() & out["channel"].ne(""), out["channel_raw"])
     return out
@@ -41,6 +53,11 @@ def _apply_mapping(raw_df: pd.DataFrame, mapping_df: pd.DataFrame) -> pd.DataFra
 def _compute_core_metrics(df: pd.DataFrame) -> pd.DataFrame:
     group_cols = ["month_end"] + SLICE_KEYS
     measures = ["end_aum", "nnb", "nnf"]
+    if "net_flow" in df.columns:
+        mask = df["nnb"].isna() | (df["nnb"].fillna(0) == 0)
+        df = df.copy()
+        df.loc[mask, "nnb"] = df.loc[mask, "net_flow"]
+        measures = measures + ["net_flow"]
     agg = df.groupby(group_cols, as_index=False)[measures].sum(min_count=1)
     agg = agg.sort_values(SLICE_KEYS + ["month_end"]).reset_index(drop=True)
     agg["begin_aum"] = agg.groupby(SLICE_KEYS)["end_aum"].shift(1)

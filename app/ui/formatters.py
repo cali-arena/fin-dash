@@ -25,11 +25,11 @@ CURRENCY_COLUMNS = frozenset(
     }
 )
 PERCENT_COLUMNS = frozenset(
-    {"ogr", "mom_pct", "ytd_pct", "yoy_pct", "market_impact_rate", "fee_yield"}
+    {"ogr", "mom_pct", "ytd_pct", "yoy_pct", "market_impact_rate", "fee_yield", "fee_yield_proxy"}
 )
 
 
-def fmt_currency(x: float | None, unit: str = "auto", decimals: int = 2) -> str:
+def fmt_currency(x: float | None, unit: str = "auto", decimals: int = 2, symbol: str = "$") -> str:
     if x is None or (isinstance(x, float) and pd.isna(x)):
         return NA_STR
     try:
@@ -37,15 +37,15 @@ def fmt_currency(x: float | None, unit: str = "auto", decimals: int = 2) -> str:
     except (TypeError, ValueError):
         return NA_STR
     if unit != "auto":
-        return f"{v:,.{decimals}f}"
+        return f"{symbol}{v:,.{decimals}f}"
     abs_v = abs(v)
     if abs_v >= 1e9:
-        return f"{v / 1e9:,.{decimals}f}B"
+        return f"{symbol}{v / 1e9:,.{decimals}f}B"
     if abs_v >= 1e6:
-        return f"{v / 1e6:,.{decimals}f}M"
+        return f"{symbol}{v / 1e6:,.{decimals}f}M"
     if abs_v >= 1e3:
-        return f"{v / 1e3:,.{decimals}f}K"
-    return f"{v:,.{decimals}f}"
+        return f"{symbol}{v / 1e3:,.{decimals}f}K"
+    return f"{symbol}{v:,.{decimals}f}"
 
 
 def fmt_percent(x: float | None, decimals: int = 2, signed: bool = False) -> str:
@@ -119,10 +119,9 @@ def infer_common_formats(df: pd.DataFrame) -> dict[str, Callable[[Any], str]]:
         return {}
     result: dict[str, Callable[[Any], str]] = {}
     for c in df.columns:
-        key = str(c).strip().lower()
+        key = str(c).strip().lower().replace(" ", "_").replace("-", "_")
         if key in CURRENCY_COLUMNS:
             result[c] = lambda x: fmt_currency(x, unit="auto", decimals=2)
         elif key in PERCENT_COLUMNS:
             result[c] = lambda x: fmt_percent(x, decimals=2, signed=False)
     return result
-

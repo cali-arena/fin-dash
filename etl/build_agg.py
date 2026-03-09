@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pandas as pd
 
-MEASURES = ["begin_aum", "end_aum", "nnb", "nnf", "ogr", "market_impact", "market_impact_rate", "fee_yield"]
+MEASURES = ["begin_aum", "end_aum", "nnb", "nnf", "net_flow", "ogr", "market_impact", "market_impact_rate", "fee_yield"]
 MONTH_END_ALIASES = ("date", "month", "month_end_date", "period")
 CHANNEL_ALIASES = ("preferred_label", "channel_l1", "channel_l2", "channel_standard", "channel_best", "canonical_channel")
 TICKER_ALIASES = ("ticker", "ticker_symbol", "symbol")
