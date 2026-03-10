@@ -147,7 +147,7 @@ def main() -> None:
         renderer = PAGE_RENDERERS.get(tab_name)
         with tab_widget:
             if renderer is None:
-                st.error(f"No renderer configured for tab '{tab_name}'")
+                st.info("This tab is not available.")
                 continue
             renderer(state, {"tab_id": tab_name})
 

@@ -19,6 +19,6 @@ Use this after `make up` or `make run` to confirm the app and exports work.
 
 4. **Empty state behaviour**
    - In the sidebar (or Tab 1 filters), set a **date range or filter** that yields no rows (e.g. a future date range or a channel that does not exist).
-   - Confirm the UI shows an empty state message (e.g. "No data under current filters" or "No rows returned") and a hint (e.g. "Widen date range or relax filters") instead of an error stack.
+   - Confirm the UI shows an empty state message (e.g. "No data under current filters" or "No data returned for this query") and a hint (e.g. "Widen date range or relax filters", "Adjust filters or time range") instead of an error stack.
 
 Pass: app loads, Tab 3 NLQ returns a result, CSV export downloads, and empty filters show a safe empty state.

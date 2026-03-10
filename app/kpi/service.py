@@ -10,7 +10,7 @@ from typing import Any
 import pandas as pd
 
 from app.kpi.contract import PERIOD_1M, PERIOD_ALLOWED, PERIOD_QOQ, PERIOD_YTD, PERIOD_YOY
-from app.metrics.metric_contract import compute_market_impact, compute_ogr, coerce_num
+from app.metrics.metric_contract import compute_fee_yield, compute_market_impact, compute_ogr, coerce_num
 
 NAN = float("nan")
 
@@ -52,6 +52,39 @@ def apply_period_canonical(df: pd.DataFrame, period: str) -> pd.DataFrame:
     if period == PERIOD_YOY:
         return work[work["month_end"] >= (last_dt - pd.DateOffset(months=11))]
     return work
+
+
+# Threshold: if |NNB|/|NNF| or |NNF|/|NNB| exceeds this, flag possible unit mismatch (e.g. NNF in thousands, NNB in same unit as AUM).
+NNF_NNB_RATIO_THRESHOLD = 100.0
+
+
+def _add_nnf_nnb_unit_check(nnb: float, nnf: float, validation: dict[str, Any]) -> None:
+    """
+    If NNB and NNF are both non-zero but differ by more than NNF_NNB_RATIO_THRESHOLD,
+    set validation["unit_consistency"] = "possible_mismatch" and add a warning.
+    Does not change any KPI value; display remains as computed from source.
+    """
+    if nnb != nnb or nnf != nnf:
+        validation["unit_consistency"] = "ok"
+        return
+    a_nnb, a_nnf = abs(nnb), abs(nnf)
+    if a_nnf < 1e-12 and a_nnb < 1e-12:
+        validation["unit_consistency"] = "ok"
+        return
+    if a_nnf < 1e-12:
+        validation["unit_consistency"] = "ok"
+        return
+    ratio = a_nnb / a_nnf
+    if ratio > NNF_NNB_RATIO_THRESHOLD or ratio < (1.0 / NNF_NNB_RATIO_THRESHOLD):
+        validation["unit_consistency"] = "possible_mismatch"
+        validation["nnb_nnf_ratio"] = round(ratio, 4)
+        validation["warnings"].append(
+            "NNF and NNB differ by more than 100x in this period. "
+            "If your source data uses the same unit for both, check ETL/source for a scaling error; "
+            "otherwise the displayed values are correct."
+        )
+    else:
+        validation["unit_consistency"] = "ok"
 
 
 def _resolve_prior_period_begin_aum(monthly: pd.DataFrame, last_row_index: int) -> tuple[float, bool]:
@@ -162,6 +195,10 @@ def compute_kpi(
         "nnb": float(nnb) if nnb == nnb else None,
         "nnf": float(nnf) if nnf == nnf else None,
     }
+    validation["pipeline"] = (
+        "Single path: app.kpi.service.compute_kpi. Source: monthly_df (sum by month_end); "
+        "period filter; latest row in window. Columns: begin_aum, end_aum, nnb, nnf. No scaling applied."
+    )
     validation["prior_period"] = {
         "begin_aum_used": float(begin_aum) if begin_aum == begin_aum else None,
         "prior_period_used": prior_period_used,
@@ -187,10 +224,38 @@ def compute_kpi(
         "market_movement": float(market_movement) if market_movement == market_movement else None,
     }
 
+    # Window-level source totals (for audit: raw values in selected period)
+    window_sum_nnb = float(window["nnb"].sum()) if "nnb" in window.columns else None
+    window_sum_nnf = float(window["nnf"].sum()) if "nnf" in window.columns else None
+    validation["source_summary"] = {
+        "window_row_count": int(len(window)),
+        "window_sum_nnb": window_sum_nnb,
+        "window_sum_nnf": window_sum_nnf,
+        "latest_row_nnb": float(nnb) if nnb == nnb else None,
+        "latest_row_nnf": float(nnf) if nnf == nnf else None,
+    }
+
+    # Unit consistency: NNF and NNB should be in the same unit (e.g. dollars). If ratio is extreme, flag for review.
+    _add_nnf_nnb_unit_check(nnb, nnf, validation)
+
+    # Fee yield consistency: implied fee yield from NNF/avg_aum (for audit; does not change displayed KPIs)
+    if end_aum == end_aum and begin_aum == begin_aum and nnf == nnf and nnb == nnb:
+        fee_yield_implied = compute_fee_yield(nnf, begin_aum, end_aum, nnb=nnb)
+        validation["outputs"]["fee_yield_implied"] = float(fee_yield_implied) if fee_yield_implied == fee_yield_implied else None
+        last_fee = coerce_num(last_in_window.get("fee_yield"))
+        if last_fee == last_fee and fee_yield_implied == fee_yield_implied and abs(fee_yield_implied - last_fee) > 1e-6:
+            validation["fee_yield_consistency"] = "mismatch"
+            validation["warnings"].append(
+                "Fee yield from row differs from NNF/avg AUM; verify source or derived column."
+            )
+        else:
+            validation["fee_yield_consistency"] = "ok"
+
     # Reconciliation check: begin + nnb + market should equal end_aum
     if begin_aum == begin_aum and nnb == nnb and market_movement == market_movement and end_aum == end_aum:
         recon = begin_aum + nnb + market_movement - end_aum
-        if abs(recon) > 1e-6:
+        validation["reconciliation_variance"] = float(recon)
+        if abs(recon) > 1.0:
             validation["warnings"].append(f"KPI reconciliation variance: {recon:.4f} (begin+nnb+market-end).")
 
     return KPIResult(

@@ -3710,6 +3710,30 @@ def _build_anomalies_canonical(
                 "month_end": current_me,
             })
 
+    # --- Firm-level fee yield deterioration (current vs prior month) ---
+    FEE_YIELD_DETERIORATION_BPS = 5  # flag if fee yield dropped by at least 5 bps
+    if time_series is not None and not time_series.empty and "fee_yield" in time_series.columns and current_me is not None:
+        ts_sorted = time_series.sort_values("month_end")
+        cur_row = ts_sorted[ts_sorted["month_end"] == current_me]
+        if not cur_row.empty and len(ts_sorted) >= 2:
+            cur_fy = float(cur_row.iloc[0].get("fee_yield", float("nan")))
+            prev_row = ts_sorted[ts_sorted["month_end"] < current_me].tail(1)
+            if not prev_row.empty:
+                prior_fy = float(prev_row.iloc[0].get("fee_yield", float("nan")))
+                if not pd.isna(cur_fy) and not pd.isna(prior_fy) and prior_fy > 0 and cur_fy < prior_fy - (FEE_YIELD_DETERIORATION_BPS / 10000.0):
+                    rows.append({
+                        "level": "firm",
+                        "entity": "FIRM",
+                        "metric": "FEE_YIELD",
+                        "value_current": cur_fy,
+                        "baseline": prior_fy,
+                        "zscore": float("nan"),
+                        "rule_id": "fee_yield_deterioration",
+                        "reason": f"Fee yield fell from {prior_fy:.4f} to {cur_fy:.4f} (prior month).",
+                        "severity": "medium",
+                        "month_end": current_me,
+                    })
+
     # --- Dimension-level: cross-sectional z and reversals (channel, ticker) ---
     def _dim_anomalies(
         monthly_df: pd.DataFrame,
@@ -4016,7 +4040,7 @@ def _build_firm_snapshot_canonical(
     cols = [
         "month_end", "begin_aum", "end_aum", "nnb", "nnf",
         "mom_pct", "ytd_pct", "yoy_pct",
-        "ogr", "market_impact_abs", "market_impact_rate", "fee_yield",
+        "ogr", "market_impact_abs", "market_impact_rate", "fee_yield", "fee_yield_prior",
     ]
     empty = pd.DataFrame(columns=cols)
     if df is None or df.empty or "month_end" not in df.columns:
@@ -4074,11 +4098,28 @@ def _build_firm_snapshot_canonical(
     ogr = compute_ogr(nnb, begin_aum) if (not prior_missing and begin_aum == begin_aum and begin_aum and begin_aum > 0) else float("nan")
     mi_rate = compute_market_impact_rate(mi_abs, begin_aum) if (begin_aum == begin_aum and begin_aum and begin_aum > 0) else float("nan")
     fee_yield = float("nan")
+    fee_yield_prior = float("nan")
     has_nnf = "nnf" in df.columns
     if has_nnf:
         avg_aum = (float(begin_aum) + float(end_aum)) / 2.0 if (begin_aum == begin_aum and end_aum == end_aum and (begin_aum or end_aum)) else 0.0
         if avg_aum > 0:
             fee_yield = compute_fee_yield(nnf, begin_aum, end_aum, nnb=nnb)
+        if prior is not None:
+            prior_row = by_month[by_month["month_end"] == prior]
+            if not prior_row.empty:
+                pr = prior_row.iloc[0]
+                prior_end = float(pr.get("end_aum", float("nan")))
+                prior_nnf = float(pr.get("nnf", float("nan")))
+                prior_nnb = float(pr.get("nnb", float("nan")))
+                prior_begin = float("nan")
+                by_sorted = by_month.sort_values("month_end").reset_index(drop=True)
+                pos = by_sorted[by_sorted["month_end"] == prior].index
+                if len(pos) > 0 and pos[0] >= 1:
+                    prior_begin = float(by_sorted.iloc[pos[0] - 1].get("end_aum", float("nan")))
+                if prior_begin != prior_begin or prior_begin == 0:
+                    prior_begin = 0.0
+                if prior_end == prior_end and prior_end and prior_nnf == prior_nnf:
+                    fee_yield_prior = compute_fee_yield(prior_nnf, prior_begin, prior_end, nnb=prior_nnb)
     else:
         meta["fee_yield_nnf_missing"] = True
     row = {
@@ -4094,6 +4135,7 @@ def _build_firm_snapshot_canonical(
         "market_impact_abs": mi_abs,
         "market_impact_rate": mi_rate,
         "fee_yield": fee_yield,
+        "fee_yield_prior": fee_yield_prior,
     }
     out = pd.DataFrame([row]).reindex(columns=[c for c in cols if c in row], copy=False)
     return out, meta

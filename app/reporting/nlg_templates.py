@@ -117,11 +117,12 @@ def select_executive_overview(snap: dict[str, Any], fmt_money: Any, fmt_pct: Any
     # Opening narrative paragraph
     bullets.append(EXEC_PARAGRAPH_OPENING)
 
-    # Headline: AUM, MoM, YTD, NNB, OGR
-    bullets.append(
-        f"As at {month_end}, AUM stands at {fmt_money(end_aum)}; MoM {fmt_pct(mom_pct)}, YTD {fmt_pct(ytd_pct)}. "
-        f"Net new business {fmt_money(nnb)}; organic growth {fmt_pct(ogr)}."
-    )
+    # Headline: AUM, MoM, YTD, NNB, NNF when available, OGR
+    head = f"As at {month_end}, AUM stands at {fmt_money(end_aum)}; MoM {fmt_pct(mom_pct)}, YTD {fmt_pct(ytd_pct)}. Net new business {fmt_money(nnb)}"
+    if not _is_na(_num(snap.get("nnf"))):
+        head += f"; net new fees {fmt_money(_num(snap.get("nnf")))}"
+    head += f". Organic growth rate {fmt_pct(ogr)}."
+    bullets.append(head)
 
     # Are we growing? (directional)
     if not _is_na(ogr) and not _is_na(mkt_rate):
@@ -482,4 +483,80 @@ def select_recommendations(
         bullets.append(REC_TEMPLATES["monitor_modest"])
     elif len(bullets) == 1 and "no_actions" in bullets[0]:
         bullets.append(REC_TEMPLATES["monitor_modest"])
-    return bullets[:6]
+    return bullets[:5]
+
+
+# --- Public API (deterministic report-generation entry points; no LLM) -------
+
+def _safe_first_row(df: Any) -> dict[str, Any]:
+    """First row as dict; {} if empty or not DataFrame-like."""
+    if df is None:
+        return {}
+    empty = getattr(df, "empty", None)
+    if empty is not None and bool(empty):
+        return {}
+    try:
+        return df.iloc[0].to_dict()
+    except Exception:
+        return {}
+
+
+def generate_executive_overview(metrics: dict[str, Any]) -> list[str]:
+    """Executive overview bullets from snapshot metrics. Deterministic; no LLM."""
+    from app.ui.formatters import fmt_currency, fmt_percent
+    def _m(x: Any) -> str:
+        return fmt_currency(x, unit=" ", decimals=0)
+    def _p(x: Any) -> str:
+        return fmt_percent(x, decimals=2, signed=False)
+    return select_executive_overview(metrics or {}, _m, _p)
+
+
+def generate_channel_analysis(channel_df: Any, comparisons: dict[str, Any]) -> list[str]:
+    """Channel commentary bullets from channel rank table and snapshot. Caller must pass bullets_from_rules from rules; here we add NLG layer only."""
+    from app.ui.formatters import fmt_currency, fmt_percent
+    def _m(x: Any) -> str:
+        return fmt_currency(x, unit=" ", decimals=0)
+    def _p(x: Any) -> str:
+        return fmt_percent(x, decimals=2, signed=False)
+    return select_channel_commentary([], channel_df, comparisons or {}, _m, _p)
+
+
+def generate_product_analysis(product_df: Any, flags: Any = None) -> list[str]:
+    """Product commentary bullets from product/ticker rank table. flags unused; reserved for future pricing/underutilized flags."""
+    from app.ui.formatters import fmt_currency, fmt_percent
+    def _m(x: Any) -> str:
+        return fmt_currency(x, unit=" ", decimals=0)
+    def _p(x: Any) -> str:
+        return fmt_percent(x, decimals=2, signed=False)
+    return select_product_commentary([], product_df, _m, _p)
+
+
+def generate_geographic_analysis(geo_df: Any) -> list[str]:
+    """Geographic commentary bullets from geography rank table."""
+    from app.ui.formatters import fmt_percent
+    return select_geo_commentary([], geo_df, fmt_percent)
+
+
+def generate_anomalies(anomaly_df: Any) -> list[str]:
+    """Anomaly bullets from anomaly table. Deterministic; no LLM."""
+    from app.ui.formatters import fmt_number
+    return select_anomaly_bullets(anomaly_df, fmt_number)
+
+
+def generate_recommendations(context: Any) -> list[str]:
+    """Recommendation bullets (3–5) from ReportPack and snapshot. Deterministic; no LLM. context is pack or (pack, snap)."""
+    from app.ui.formatters import fmt_percent
+    if hasattr(context, "firm_snapshot"):
+        pack = context
+        snap = _safe_first_row(getattr(pack, "firm_snapshot", None))
+    else:
+        pack, snap = (context[0], context[1]) if isinstance(context, (tuple, list)) and len(context) >= 2 else (None, {})
+    mkt_neg = False
+    if snap:
+        rate = snap.get("market_impact_rate")
+        ab = snap.get("market_impact_abs")
+        if rate is not None and not _is_na(_num(rate)) and float(rate) < 0:
+            mkt_neg = True
+        elif ab is not None and not _is_na(_num(ab)) and float(ab) < 0:
+            mkt_neg = True
+    return select_recommendations(pack, snap or {}, fmt_percent, OGR_STRONG, mkt_neg)

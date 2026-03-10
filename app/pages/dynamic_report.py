@@ -175,7 +175,7 @@ def _executive_chart(ts: pd.DataFrame) -> bool:
     if len(work) < 2 or not has_meaningful_variation(work["end_aum"]):
         return False
     fig = go.Figure()
-    fig.add_trace(go.Scatter(x=work["month_end"], y=work["end_aum"], mode="lines+markers", name="End AUM (report slice)", line=dict(color=PALETTE["primary"], width=2.4)))
+    fig.add_trace(go.Scatter(x=work["month_end"], y=work["end_aum"], mode="lines+markers", name="End AUM (selected slice)", line=dict(color=PALETTE["primary"], width=2.4)))
     market_col = "market_impact_abs" if "market_impact_abs" in work.columns else ("market_impact" if "market_impact" in work.columns else None)
     if market_col is not None and has_meaningful_variation(work[market_col]):
         work[market_col] = pd.to_numeric(work[market_col], errors="coerce")
@@ -185,7 +185,7 @@ def _executive_chart(ts: pd.DataFrame) -> bool:
         work["nnb"] = pd.to_numeric(work["nnb"], errors="coerce")
         fig.add_trace(go.Bar(x=work["month_end"], y=work["nnb"], name="NNB", marker=dict(color=PALETTE["secondary"], opacity=0.35), yaxis="y2"))
         fig.update_layout(yaxis2=dict(title="NNB", overlaying="y", side="right", showgrid=False))
-    fig.update_layout(title="AUM trend (report slice)", xaxis_title="Month", yaxis_title="End AUM (report slice)", height=320, margin=dict(l=8, r=8, t=42, b=8))
+    fig.update_layout(title="AUM trend (selected slice)", xaxis_title="Month", yaxis_title="End AUM (selected slice)", height=320, margin=dict(l=8, r=8, t=42, b=8))
     apply_enterprise_plotly_style(fig, height=320)
     st.plotly_chart(fig, use_container_width=True, key="tab2_exec_ts")
     return True
@@ -242,9 +242,9 @@ def render(state: FilterState, contract: dict[str, Any]) -> None:
     updated = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     h1, h2, h3 = st.columns(3)
     h1.caption(f"Reporting window: {filters.date_start} to {filters.date_end}")
-    h2.caption(f"Active filter context: {filters.slice_dim + ': ' + filters.slice_value if filters.slice_dim and filters.slice_value else 'Enterprise-wide portfolio'}")
+    h2.caption(f"Portfolio scope: {filters.slice_dim + ': ' + filters.slice_value if filters.slice_dim and filters.slice_value else 'Enterprise-wide portfolio'}")
     h3.caption(f"Data refresh timestamp: {updated}")
-    st.markdown("<div class='section-subtitle'>Portfolio commentary and evidence to support decisions. All narrative and metrics are from your data; export sections as needed.</div>", unsafe_allow_html=True)
+    st.markdown("<div class='section-subtitle'>Portfolio commentary and supporting evidence for decisions. Narrative and metrics are deterministic from your internal data.</div>", unsafe_allow_html=True)
 
     with st.spinner("Loading investment commentary..."):
         pack = _get_gateway().get_report_pack(filters)
@@ -284,7 +284,7 @@ def render(state: FilterState, contract: dict[str, Any]) -> None:
     st.markdown("<div class='section-subtitle'>Growth direction, revenue quality, and market contribution.</div>", unsafe_allow_html=True)
     report_scope = (filters.slice_dim + ": " + filters.slice_value) if (filters.slice_dim and filters.slice_value) else "Firm-wide portfolio"
     c1, c2, c3, c4, c5 = st.columns(5)
-    c1.metric("End AUM (report slice)", fmt_currency(snap.get("end_aum"), unit="auto", decimals=2))
+    c1.metric("End AUM (selected slice)", fmt_currency(snap.get("end_aum"), unit="auto", decimals=2))
     c2.metric("MoM Growth", fmt_percent(snap.get("mom_pct"), decimals=2, signed=True))
     c3.metric("YTD Growth", fmt_percent(snap.get("ytd_pct"), decimals=2, signed=True))
     c4.metric("Net New Business", fmt_currency(snap.get("nnb"), unit="auto", decimals=2))
@@ -299,9 +299,9 @@ def render(state: FilterState, contract: dict[str, Any]) -> None:
         for b in overview_list:
             st.markdown(f"- {b}")
     if not _executive_chart(getattr(pack, "time_series", pd.DataFrame())):
-        _note("Executive chart suppressed because time-series signal is insufficient.")
+        _note("Time-series data in the selected range is insufficient for the executive chart.")
 
-    st.markdown("#### Distribution / Channel Analysis")
+    st.markdown("#### Channel Analysis")
     st.markdown("<div class='section-subtitle'>What this shows: channel concentration, leadership, and mix shift. Why it matters: see where flow and AUM are coming from and where to reallocate.</div>", unsafe_allow_html=True)
     for b in _normalize_bullets(channel.bullets, 6):
         st.markdown(f"- {b}")
@@ -313,7 +313,7 @@ def render(state: FilterState, contract: dict[str, Any]) -> None:
     elif not _mix_shift_or_concentration(channel_df, "tab2_channel", "Channel"):
         _note("Channel mix lacks enough variation for a secondary mix-shift view.", "Signal Note")
 
-    st.markdown("#### Product & ETF Analysis")
+    st.markdown("#### Product and ETF Analysis")
     st.markdown("<div class='section-subtitle'>What this shows: product-level flow quality, concentration, and ETF contribution. Why it matters: spot leaders, laggards, and concentration risk.</div>", unsafe_allow_html=True)
     for b in _normalize_bullets(product.bullets, 6):
         st.markdown(f"- {b}")
@@ -339,7 +339,7 @@ def render(state: FilterState, contract: dict[str, Any]) -> None:
         st.markdown(f"- {b}")
     if anomalies_df is not None and not anomalies_df.empty:
         if not _ranked_bar(anomalies_df, "Anomaly intensity snapshot", "tab2_risk", ["zscore", "value_current"]):
-            _note("Anomaly chart suppressed because the signal has fewer than two meaningful points.")
+            _note("Anomaly chart not shown: fewer than two meaningful data points in the selected range.")
 
     st.markdown("#### Recommendations")
     st.markdown("<div class='section-subtitle'>What this shows: suggested next actions from anomalies, concentration, and mix shift. Why it matters: prioritize where to act.</div>", unsafe_allow_html=True)
@@ -358,9 +358,9 @@ def render(state: FilterState, contract: dict[str, Any]) -> None:
 
     st.divider()
     if suppressed:
-        st.caption("Suppressed sections due to insufficient signal: " + ", ".join(suppressed))
+        st.caption("Sections not shown (insufficient data in selected range): " + ", ".join(suppressed))
 
-    with st.expander("Evidence and Reconciliation Pack", expanded=False):
+    with st.expander("Evidence Pack and Consistency Checks", expanded=False):
         recon_df = pd.DataFrame(rec)
         if not recon_df.empty:
             st.dataframe(format_df(recon_df, infer_common_formats(recon_df)), use_container_width=True, hide_index=True, height=min(220, 56 * len(recon_df) + 40))
