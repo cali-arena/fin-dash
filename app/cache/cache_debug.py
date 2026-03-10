@@ -80,5 +80,5 @@ def render_cache_debug_panel() -> None:
     import pandas as pd
     df = pd.DataFrame(entries)
     if not df.empty:
-        st.dataframe(df, use_container_width=True, hide_index=True)
+        st.dataframe(df, width="stretch", hide_index=True)
     st.caption("level, name, dataset_version, filter_hash, elapsed_ms, rowcount_or_size, bust_reason")

@@ -186,7 +186,7 @@ def fig_waterfall(decomposition: dict[str, Any] | None = None) -> go.Figure:
     return apply_enterprise_plotly_style(fig)
 
 
-def render_plotly_figure(fig: go.Figure, use_container_width: bool = True) -> None:
+def render_plotly_figure(fig: go.Figure, width: str = "stretch") -> None:
     """
     Render a Plotly figure in Streamlit. Use from pages: st.plotly_chart(fig, ...).
     Provided for convenience; callers may use st.plotly_chart directly.
@@ -194,5 +194,5 @@ def render_plotly_figure(fig: go.Figure, use_container_width: bool = True) -> No
     safe_render_plotly(
         fig,
         user_message="Chart unavailable for this selection.",
-        use_container_width=use_container_width,
+        width=width,
     )

@@ -800,7 +800,7 @@ def render_details_panel(
         st.caption(f"Showing Top {top_n}. Use search to refine.")
     if not breakdown_df.empty:
         breakdown_show = format_df(breakdown_df, infer_common_formats(breakdown_df))
-        st.dataframe(breakdown_show, height=360, use_container_width=True, hide_index=True)
+        st.dataframe(breakdown_show, height=360, width="stretch", hide_index=True)
         if st is not None:
             def _full_breakdown_provider() -> pd.DataFrame:
                 stored = st.session_state.get(store_key) if st else None
@@ -840,22 +840,22 @@ def render_details_panel(
         if not movers_df.empty:
             st.markdown("**What Changed This Period? (Top/Bottom Movers)**")
             movers_show = format_df(movers_df, infer_common_formats(movers_df))
-            st.dataframe(movers_show, use_container_width=True, hide_index=True, height=260)
+            st.dataframe(movers_show, width="stretch", hide_index=True, height=260)
             render_export_buttons(movers_df, None, "details_movers")
         if not mix_shift_df.empty:
             st.markdown("**Allocation / Flow Concentration (Mix Shift)**")
             mix_show = format_df(mix_shift_df, infer_common_formats(mix_shift_df))
-            st.dataframe(mix_show, use_container_width=True, hide_index=True, height=260)
+            st.dataframe(mix_show, width="stretch", hide_index=True, height=260)
             render_export_buttons(mix_shift_df, None, "details_mix_shift")
         if not geo_split_df.empty:
             st.markdown("**Geo Allocation Signals**")
             geo_show = format_df(geo_split_df, infer_common_formats(geo_split_df))
-            st.dataframe(geo_show, use_container_width=True, hide_index=True, height=250)
+            st.dataframe(geo_show, width="stretch", hide_index=True, height=250)
             render_export_buttons(geo_split_df, None, "details_geo_split")
         if not signal_df.empty:
             st.markdown("**Anomaly & Risk Signals**")
             signal_show = format_df(signal_df, infer_common_formats(signal_df))
-            st.dataframe(signal_show, use_container_width=True, hide_index=True, height=280)
+            st.dataframe(signal_show, width="stretch", hide_index=True, height=280)
             render_export_buttons(signal_df, None, "details_signal_table")
 
     # Selection-aware tables (formatted for display; raw df used for computations)
@@ -863,7 +863,7 @@ def render_details_panel(
     drilled_show = format_df(drilled_view, infer_common_formats(drilled_df))
     st.dataframe(
         drilled_show,
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
         height=320,
     )
@@ -874,7 +874,7 @@ def render_details_panel(
         details_breakdown_show = format_df(details_breakdown, infer_common_formats(details_breakdown))
         st.dataframe(
             details_breakdown_show,
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
             height=220,
         )

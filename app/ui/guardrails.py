@@ -105,7 +105,7 @@ def render_chart_or_fallback(
     if len(df) < min_points:
         st.caption(note)
         cols = [c for c in fallback_cols if c in df.columns]
-        st.dataframe(df[cols] if cols else df, use_container_width=True, hide_index=True)
+        st.dataframe(df[cols] if cols else df, width="stretch", hide_index=True)
         return
     try:
         chart_fn()

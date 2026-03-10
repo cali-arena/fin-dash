@@ -1102,7 +1102,7 @@ def _render_growth_quality_matrix(ticker_scoped: pd.DataFrame, monthly: pd.DataF
     action_formats["Growth Contribution"] = lambda x: fmt_currency(x, unit="auto", decimals=1)
     action_formats["Product AUM (matrix)"] = lambda x: fmt_currency(x, unit="auto", decimals=2)
     action_formats["Fee Yield"] = lambda x: (_fmt_pct(x) if pd.notna(pd.to_numeric(x, errors="coerce")) else "-")
-    st.dataframe(format_df(action_table, action_formats), use_container_width=True, hide_index=True)
+    st.dataframe(format_df(action_table, action_formats), width="stretch", hide_index=True)
     st.caption("Products are ranked by growth, fee yield, and scale to support prioritization by quadrant.")
 
     top_strip = priority.head(3)["product_ticker"].astype(str).tolist()
@@ -1266,7 +1266,7 @@ def _render_etf_drilldown(ticker_scoped: pd.DataFrame) -> None:
         lambda col: [_flag_style(v) for v in col] if col.name == "Flag" else [""] * len(col),
         axis=0,
     )
-    st.dataframe(styled, use_container_width=True, hide_index=True)
+    st.dataframe(styled, width="stretch", hide_index=True)
     st.caption(
         f"Scope: **{scope}**. Red = pricing issue; green = opportunity. Table and charts use the same flags."
     )
@@ -1726,7 +1726,7 @@ def _render_top_bottom_table(ticker_scoped: pd.DataFrame) -> None:
     col_order = [c for c in ["Product Ticker", "Channel", "Sub-Channel", "Country", "NNB", "NNF", "End AUM (per product)", "Fee Yield Proxy"] if c in table_renamed.columns]
     table_renamed = table_renamed[[c for c in col_order if c in table_renamed.columns]] if col_order else table_renamed
 
-    st.dataframe(format_df(table_renamed, infer_common_formats(table_renamed)), use_container_width=True, hide_index=True)
+    st.dataframe(format_df(table_renamed, infer_common_formats(table_renamed)), width="stretch", hide_index=True)
     st.caption(f"Scope: **{scope}**. Table is sortable and filterable; CSV export reflects the current filtered and sorted view.")
     render_export_buttons(table_renamed, None, "tab1_top_bottom_contributors")
 

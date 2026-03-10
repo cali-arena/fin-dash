@@ -152,7 +152,7 @@ def _ranked_bar(df: pd.DataFrame, title: str, key: str, prefs: list[str]) -> boo
     fig = go.Figure(go.Bar(x=work[metric], y=work[label].astype(str), orientation="h", marker=dict(color=[PALETTE["positive"] if v >= 0 else PALETTE["negative"] for v in work[metric]])))
     fig.update_layout(title=title, xaxis_title=metric, yaxis_title="", height=320, margin=dict(l=8, r=8, t=42, b=8))
     apply_enterprise_plotly_style(fig, height=320)
-    st.plotly_chart(fig, use_container_width=True, key=key)
+    st.plotly_chart(fig, width="stretch", key=key)
     return True
 
 
@@ -187,7 +187,7 @@ def _executive_chart(ts: pd.DataFrame) -> bool:
         fig.update_layout(yaxis2=dict(title="NNB", overlaying="y", side="right", showgrid=False))
     fig.update_layout(title="AUM trend (selected slice)", xaxis_title="Month", yaxis_title="End AUM (selected slice)", height=320, margin=dict(l=8, r=8, t=42, b=8))
     apply_enterprise_plotly_style(fig, height=320)
-    st.plotly_chart(fig, use_container_width=True, key="tab2_exec_ts")
+    st.plotly_chart(fig, width="stretch", key="tab2_exec_ts")
     return True
 
 
@@ -206,7 +206,7 @@ def _mix_shift_or_concentration(df: pd.DataFrame, base_key: str, section_name: s
             fig = go.Figure(go.Bar(x=mix[label].astype(str), y=mix[delta], marker=dict(color=[PALETTE["positive"] if v >= 0 else PALETTE["negative"] for v in mix[delta]])))
             fig.update_layout(title=f"{section_name} mix shift", xaxis_title="", yaxis_title=delta, height=290, margin=dict(l=8, r=8, t=42, b=8))
             apply_enterprise_plotly_style(fig, height=290)
-            st.plotly_chart(fig, use_container_width=True, key=f"{base_key}_mix")
+            st.plotly_chart(fig, width="stretch", key=f"{base_key}_mix")
             return True
     share = _metric_col(df, ["share"])
     if share is not None and has_minimum_categories(df, label, 2):
@@ -217,7 +217,7 @@ def _mix_shift_or_concentration(df: pd.DataFrame, base_key: str, section_name: s
             fig = go.Figure(go.Bar(x=conc[label].astype(str), y=conc[share], marker=dict(color=PALETTE["secondary"])))
             fig.update_layout(title=f"{section_name} concentration (top 5)", xaxis_title="", yaxis_title="Share", height=290, margin=dict(l=8, r=8, t=42, b=8))
             apply_enterprise_plotly_style(fig, height=290)
-            st.plotly_chart(fig, use_container_width=True, key=f"{base_key}_conc")
+            st.plotly_chart(fig, width="stretch", key=f"{base_key}_conc")
             return True
     return False
 
@@ -363,7 +363,7 @@ def render(state: FilterState, contract: dict[str, Any]) -> None:
     with st.expander("Evidence Pack and Consistency Checks", expanded=False):
         recon_df = pd.DataFrame(rec)
         if not recon_df.empty:
-            st.dataframe(format_df(recon_df, infer_common_formats(recon_df)), use_container_width=True, hide_index=True, height=min(220, 56 * len(recon_df) + 40))
+            st.dataframe(format_df(recon_df, infer_common_formats(recon_df)), width="stretch", hide_index=True, height=min(220, 56 * len(recon_df) + 40))
         for name, tbl in [
             ("Executive evidence", overview.table),
             ("Channel evidence", channel.table),
@@ -374,7 +374,7 @@ def render(state: FilterState, contract: dict[str, Any]) -> None:
         ]:
             if tbl is not None and not tbl.empty:
                 st.caption(name)
-                st.dataframe(format_df(tbl.head(12), infer_common_formats(tbl.head(12))), use_container_width=True, hide_index=True, height=min(220, 56 * len(tbl.head(12)) + 40))
+                st.dataframe(format_df(tbl.head(12), infer_common_formats(tbl.head(12))), width="stretch", hide_index=True, height=min(220, 56 * len(tbl.head(12)) + 40))
                 render_export_buttons(tbl, None, f"tab2_{name.lower().replace(' ', '_')}")
 
         html = build_report_html("Investment Commentary", export_sections, meta)

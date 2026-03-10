@@ -134,7 +134,7 @@ def render_debug_panel() -> None:
         df = pd.DataFrame(queries[-QUERIES_DISPLAY:][::-1])
         if not df.empty and "ts" in df.columns:
             st.subheader("Last 30 queries")
-            st.dataframe(df, use_container_width=True, hide_index=True)
+            st.dataframe(df, width="stretch", hide_index=True)
     else:
         st.caption("No query logs yet.")
 

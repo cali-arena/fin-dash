@@ -309,7 +309,7 @@ def safe_render_plotly(
     fig_builder,
     *,
     user_message: str = "Chart unavailable for this selection.",
-    use_container_width: bool = True,
+    width: str = "stretch",
 ) -> None:
     """
     Render a Plotly figure with compact user-facing failures.
@@ -317,7 +317,7 @@ def safe_render_plotly(
     """
     try:
         fig = fig_builder() if callable(fig_builder) else fig_builder
-        st.plotly_chart(fig, use_container_width=use_container_width)
+        st.plotly_chart(fig, width=width)
     except Exception as exc:
         st.markdown(
             (

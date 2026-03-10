@@ -134,7 +134,7 @@ def render_observability_panel(
                     "warning": (e.get("warning") or "—")[:80],
                 })
             df = pd.DataFrame(table_data)
-            st.dataframe(df, use_container_width=True, hide_index=True, height=min(400, 50 * len(df) + 38))
+            st.dataframe(df, width="stretch", hide_index=True, height=min(400, 50 * len(df) + 38))
         else:
             st.caption("No query log entries yet")
 

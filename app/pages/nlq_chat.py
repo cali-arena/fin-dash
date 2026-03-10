@@ -1,8 +1,8 @@
 """
-Tab 3: Chat with two explicit modes.
-- Data Questions: Python classifies intent, extracts parameters, runs deterministic query; Claude receives verified output only and writes narrative. Chart/table auto-triggered.
-- Market Intelligence: external search + Claude; answer clearly labeled as external.
-Claude never performs calculations or touches raw internal data.
+Intelligence Desk page (tab "nlq_chat").
+Loaded by app/main.py via PAGE_RENDERERS["nlq_chat"] = render_nlq_chat — this is the only implementation.
+- Data Questions: governed query, verified result, optional narrative. Chart/table in single response area.
+- Market Intelligence: external search + Claude; answer labeled as external.
 """
 from __future__ import annotations
 
@@ -27,7 +27,7 @@ from app.state import FilterState, filter_state_to_gateway_dict
 from app.nlq.executor import EXECUTOR_TIMEOUT_MS
 from app.ui.formatters import fmt_percent, format_df, infer_common_formats
 from app.ui.exports import render_export_buttons
-from app.ui.guardrails import fallback_note, render_chart_or_fallback, render_empty_state, render_timeout_state
+from app.ui.guardrails import fallback_note, render_chart_or_fallback, render_empty_state
 from app.ui.theme import apply_enterprise_plotly_style, safe_render_plotly
 
 try:
@@ -40,6 +40,7 @@ except ImportError:
 
 ROOT = Path(__file__).resolve().parents[2]
 KNOWN_ETF_TICKERS = frozenset({"AGG", "HYG", "TIP", "MUB", "MBB", "IUSB", "SUB"})
+CHAT_HISTORY_KEY = "nlq_chat_history"
 
 
 @dataclass(frozen=True)
@@ -434,7 +435,7 @@ def render_chart(
 
     st.subheader("Results Table")
     df_show = format_df(df, infer_common_formats(df))
-    st.dataframe(df_show, height=420, use_container_width=True, hide_index=True)
+    st.dataframe(df_show, height=420, width="stretch", hide_index=True)
     render_export_buttons(
         df,
         full_export_provider,
@@ -494,7 +495,7 @@ NLQ_RESPONSE_KEY = "nlq_response"
 
 
 def _render_prompt_presets(is_data_mode: bool) -> None:
-    """Four presets in a 2x2 grid."""
+    """Four presets in a 2x2 grid with compact visual weight."""
     prompts = DATA_PROMPTS if is_data_mode else MARKET_PROMPTS
     for row in range(0, 4, 2):
         cols = st.columns(2)
@@ -503,22 +504,23 @@ def _render_prompt_presets(is_data_mode: bool) -> None:
                 if st.button(
                     prompts[i],
                     key=f"nlq_preset_{'data' if is_data_mode else 'market'}_{i}",
-                    use_container_width=True,
+                    width="content",
                 ):
                     st.session_state["nlq_question"] = prompts[i]
 
 
 def _render_active_scope(state: FilterState) -> None:
-    """Single subtle line: portfolio scope and reporting window."""
+    """Single subtle line: portfolio scope and reporting window (compact)."""
     scope = "Enterprise-wide portfolio"
     if getattr(state, "slice_dim", None) and getattr(state, "slice_value", None):
         scope = f"{state.slice_dim}: {state.slice_value}"
     start = getattr(state, "date_start", None)
     end = getattr(state, "date_end", None)
     if start and end:
-        st.caption(f"Active portfolio scope: {scope}. Reporting window: {start} to {end}.")
+        line = f"Active portfolio scope: {scope}. Reporting window: {start} to {end}."
     else:
-        st.caption(f"Active portfolio scope: {scope}.")
+        line = f"Active portfolio scope: {scope}."
+    st.markdown(f"<div class='nlq-scope'>{line}</div>", unsafe_allow_html=True)
 
 
 def _set_nlq_response(
@@ -548,23 +550,23 @@ def _set_nlq_response(
 
 
 def _render_response_area(state: FilterState, contract: dict[str, Any]) -> None:
-    """Single response container: header, subtitle, narrative, optional table, optional chart. Empty/error/fallback states."""
+    """Single response container: compact header, narrative, optional table/chart. Visually close to input."""
     resp = st.session_state.get(NLQ_RESPONSE_KEY)
     if resp is None:
-        st.markdown("---")
+        st.markdown("<div class='nlq-divider'></div>", unsafe_allow_html=True)
         st.markdown(
-            "<div class='empty-state-card'>"
-            "<div class='empty-state-title'>Result will appear here</div>"
-            "<div>Choose a mode, ask a question, and the result will appear here.</div>"
+            "<div class='nlq-empty-state'>"
+            "<div class='nlq-empty-title'>Result will appear here</div>"
+            "Choose a mode, ask a question, and the result will appear here."
             "</div>",
             unsafe_allow_html=True,
         )
         return
 
-    st.markdown("---")
+    st.markdown("<div class='nlq-divider'></div>", unsafe_allow_html=True)
     header = resp.get("header") or "Response"
     subtitle = resp.get("subtitle") or ""
-    st.subheader(header)
+    st.markdown(f"<p class='nlq-response-header'><strong>{header}</strong></p>", unsafe_allow_html=True)
     if subtitle:
         st.caption(subtitle)
 
@@ -591,7 +593,7 @@ def _render_response_area(state: FilterState, contract: dict[str, Any]) -> None:
 
     table_df = resp.get("table_df")
     if table_df is not None and isinstance(table_df, pd.DataFrame) and not table_df.empty:
-        st.dataframe(table_df, height=420, use_container_width=True, hide_index=True)
+        st.dataframe(table_df, height=420, width="stretch", hide_index=True)
         if resp.get("full_export_provider"):
             render_export_buttons(
                 table_df,
@@ -601,20 +603,68 @@ def _render_response_area(state: FilterState, contract: dict[str, Any]) -> None:
             )
 
 
-def render(state: FilterState, contract: dict[str, Any]) -> None:
-    """Intelligence Desk: minimal institutional UI — mode, presets, input, single response area."""
-    _ = contract
+def _render_compact_history() -> None:
+    """Compact, optional conversation history below the response area."""
+    hist = st.session_state.get(CHAT_HISTORY_KEY) or []
+    if not hist:
+        return
+    with st.expander("Recent conversation", expanded=False):
+        for msg in hist[-8:]:
+            role = msg.get("role", "assistant")
+            prefix = "You" if role == "user" else "Desk"
+            st.markdown(f"**{prefix}:** {msg.get('text', '')}")
 
-    # --- 1. Page header ---
-    st.title("Intelligence Desk")
+
+def _inject_nlq_page_css() -> None:
+    """Page-scoped CSS for Intelligence Desk: tighter, institutional layout. No other pages affected."""
     st.markdown(
-        "<div class='section-subtitle'>Ask data questions over your internal book or market intelligence over external sources. Results are verified; narrative is optional.</div>",
+        """
+        <style>
+        /* Compact subtitle under title */
+        .nlq-subtitle { color: #b7c5e3; font-size: 0.85rem; margin-top: -0.25rem !important; margin-bottom: 0.4rem !important; line-height: 1.35; }
+        /* Light, tight guidance banner — less boxy */
+        .nlq-banner { color: #b7c5e3; font-size: 0.82rem; line-height: 1.4; border-left: 3px solid #4c7edb; border-radius: 6px; padding: 0.4rem 0.6rem; background: rgba(17,29,58,0.6); margin: 0.15rem 0 0.35rem 0; }
+        .nlq-banner strong { color: #f8fbff; }
+        /* Mode label */
+        .nlq-mode-label { font-size: 0.7rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: #b7c5e3; margin-bottom: 0.2rem !important; }
+        /* Compact mode card — smaller height, less bulk */
+        .nlq-mode-card { border: 1px solid #2a3d67; border-radius: 8px; padding: 0.4rem 0.65rem; background: rgba(23,40,77,0.5); font-size: 0.85rem; margin: 0.2rem 0 0.4rem 0; line-height: 1.35; }
+        .nlq-mode-card strong { color: #8fb4ff; }
+        .nlq-mode-card .nlq-mode-label { margin-bottom: 0.15rem !important; }
+        /* Subtle scope line */
+        .nlq-scope { color: #7f93bc; font-size: 0.78rem; margin: 0.15rem 0 0.3rem 0 !important; }
+        /* Response area: compact, close to input */
+        .nlq-divider { height: 1px; background: #2a3d67; margin: 0.35rem 0 0.5rem 0 !important; }
+        .nlq-response-header { font-size: 1.1rem !important; margin-bottom: 0.15rem !important; margin-top: 0.25rem !important; }
+        .nlq-empty-state { border: 1px solid #2a3d67; border-radius: 8px; padding: 0.5rem 0.65rem; background: rgba(17,29,58,0.5); font-size: 0.88rem; color: #b7c5e3; margin: 0.25rem 0 0.4rem 0; }
+        .nlq-empty-state .nlq-empty-title { color: #f8fbff; font-weight: 600; font-size: 0.9rem; margin-bottom: 0.15rem; }
+        /* Tighten widget spacing for this page */
+        div[data-testid="stTextInput"] { margin-bottom: 0.2rem !important; }
+        div[data-testid="stRadio"] { margin-bottom: 0.15rem !important; }
+        .stButton { margin-top: 0.1rem !important; margin-bottom: 0.1rem !important; }
+        /* Preset buttons lighter than primary action */
+        .stButton button[kind="secondary"] { opacity: 0.92; padding: 0.25rem 0.6rem !important; }
+        </style>
+        """,
         unsafe_allow_html=True,
     )
 
-    # --- 2. Mode guidance banner ---
+
+def render(state: FilterState, contract: dict[str, Any]) -> None:
+    """Intelligence Desk: minimal institutional UI — mode, presets, input, single response area."""
+    _ = contract
+    _inject_nlq_page_css()
+
+    # --- 1. Page header (compact) ---
+    st.title("Intelligence Desk")
     st.markdown(
-        "<div class='insight-banner'>"
+        "<div class='nlq-subtitle'>Ask data questions over your internal book or market intelligence over external sources. Results are verified; narrative is optional.</div>",
+        unsafe_allow_html=True,
+    )
+
+    # --- 2. Guidance banner (light, tight) ---
+    st.markdown(
+        "<div class='nlq-banner'>"
         "<strong>Two ways to ask:</strong> "
         "Data Questions = your internal data, governed query, verified result. "
         "Market Intelligence = external sources (rates, macro, sentiment), clearly labeled as external."
@@ -622,45 +672,45 @@ def render(state: FilterState, contract: dict[str, Any]) -> None:
         unsafe_allow_html=True,
     )
 
-    # --- 3. Mode selector ---
-    st.markdown("**Choose mode**")
-    mode = st.radio(
-        "Choose mode",
-        ["Data Questions", "Market Intelligence"],
-        key="nlq_mode",
-        horizontal=True,
-        format_func=lambda x: x,
-        label_visibility="collapsed",
-    )
+    # --- 3. Mode selector (tighter) ---
+    st.markdown("<span class='nlq-mode-label'>Choose mode</span>", unsafe_allow_html=True)
+    with st.container():
+        mode = st.radio(
+            "Choose mode",
+            ["Data Questions", "Market Intelligence"],
+            key="nlq_mode",
+            horizontal=True,
+            format_func=lambda x: x,
+            label_visibility="collapsed",
+        )
     is_data_mode = mode == "Data Questions"
 
-    # --- 4. Current mode card ---
+    # --- 4. Current mode card (compact) ---
     if is_data_mode:
         st.markdown(
-            "<div class='nlq-mode-badge'>"
+            "<div class='nlq-mode-card'>"
             "<div class='nlq-mode-label'>Current mode</div>"
-            "<strong>DATA QUESTIONS</strong><br/>"
-            "Verified answers from your internal portfolio data. Python performs calculations and filtering before any narrative is generated."
+            "<strong>DATA QUESTIONS</strong> — Verified answers from your internal portfolio data; calculations and filtering run before any narrative."
             "</div>",
             unsafe_allow_html=True,
         )
     else:
         st.markdown(
-            "<div class='nlq-mode-badge'>"
+            "<div class='nlq-mode-card'>"
             "<div class='nlq-mode-label'>Current mode</div>"
-            "<strong>MARKET INTELLIGENCE</strong><br/>"
-            "External sources — answer labeled as Market Intelligence."
+            "<strong>MARKET INTELLIGENCE</strong> — External sources; answer labeled as Market Intelligence."
             "</div>",
             unsafe_allow_html=True,
         )
 
-    # --- 5. Active scope line ---
+    # --- 5. Active scope line (subtle) ---
     _render_active_scope(state)
 
-    # --- 6. Prompt presets (2x2) ---
+    # --- 6. Prompt presets (2x2, supporting role) ---
+    st.caption("Suggested prompts")
     _render_prompt_presets(is_data_mode)
 
-    # --- 7. Input section ---
+    # --- 7. Input section (tighter, primary/secondary buttons) ---
     placeholder = PLACEHOLDER_DATA if is_data_mode else PLACEHOLDER_MARKET
     question = st.text_input(
         "Ask a question",
@@ -668,9 +718,9 @@ def render(state: FilterState, contract: dict[str, Any]) -> None:
         placeholder=placeholder,
         label_visibility="visible",
     )
-    col_btn1, col_btn2, _ = st.columns([1, 1, 4])
+    col_btn1, col_btn2, _ = st.columns([2, 1, 5])
     with col_btn1:
-        run_clicked = st.button("Generate response", key="nlq_run_btn")
+        run_clicked = st.button("Generate response", key="nlq_run_btn", type="primary")
     with col_btn2:
         clear_clicked = st.button("Clear", key="nlq_clear_btn")
 
@@ -683,12 +733,14 @@ def render(state: FilterState, contract: dict[str, Any]) -> None:
 
     if not run_clicked:
         _render_response_area(state, contract)
+        _render_compact_history()
         return
 
     text = (question or "").strip()
     if not text:
         st.warning("Enter a question.")
         _render_response_area(state, contract)
+        _render_compact_history()
         return
 
     route = _classify_query_route(text)
@@ -722,6 +774,7 @@ def render(state: FilterState, contract: dict[str, Any]) -> None:
                 placeholder_fallback="External intelligence is not available. Configure ANTHROPIC_API_KEY and optional search provider to enable it.",
             )
         _render_response_area(state, contract)
+        _render_compact_history()
         return
 
     # --- Data Questions path: classify intent, extract params, deterministic query, verified result -> Claude narrative only ---
@@ -736,6 +789,7 @@ def render(state: FilterState, contract: dict[str, Any]) -> None:
             error=f"Registries failed to load: {e}",
         )
         _render_response_area(state, contract)
+        _render_compact_history()
         return
 
     gateway_dict = filter_state_to_gateway_dict(state)
@@ -761,6 +815,7 @@ def render(state: FilterState, contract: dict[str, Any]) -> None:
                     error=spec_or_error.message or "Parse failed.",
                 )
                 _render_response_area(state, contract)
+                _render_compact_history()
                 return
             qs = spec_or_error
 
@@ -778,6 +833,7 @@ def render(state: FilterState, contract: dict[str, Any]) -> None:
             error=f"Data load failed: {e}",
         )
         _render_response_area(state, contract)
+        _render_compact_history()
         return
 
     allowlist = {
@@ -812,6 +868,7 @@ def render(state: FilterState, contract: dict[str, Any]) -> None:
                 error="No data returned for this query.",
             )
             _render_response_area(state, contract)
+            _render_compact_history()
             return
         base["month_end"] = pd.to_datetime(base.get("month_end"), errors="coerce")
         for c in ("begin_aum", "end_aum", "nnb"):
@@ -835,6 +892,7 @@ def render(state: FilterState, contract: dict[str, Any]) -> None:
                 error="No data returned for this query.",
             )
             _render_response_area(state, contract)
+            _render_compact_history()
             return
         latest = monthly.iloc[-1]
         begin = float(latest.get("begin_aum")) if pd.notna(latest.get("begin_aum")) else float("nan")
@@ -887,6 +945,7 @@ def render(state: FilterState, contract: dict[str, Any]) -> None:
             table_df=format_df(out_df, infer_common_formats(out_df)),
         )
         _render_response_area(state, contract)
+        _render_compact_history()
         return
 
     if extracted is not None and extracted.intent == "growth_quality_flags":
@@ -900,6 +959,7 @@ def render(state: FilterState, contract: dict[str, Any]) -> None:
                 error="No data returned for this query.",
             )
             _render_response_area(state, contract)
+            _render_compact_history()
             return
         base["month_end"] = pd.to_datetime(base.get("month_end"), errors="coerce")
         for c in ("nnb", "nnf"):
@@ -920,6 +980,7 @@ def render(state: FilterState, contract: dict[str, Any]) -> None:
                 error="Ticker data not available.",
             )
             _render_response_area(state, contract)
+            _render_compact_history()
             return
         agg = base.groupby("product_ticker", as_index=False).agg(nnb=("nnb", "sum"), nnf=("nnf", "sum"))
         if "etf" in _normalize_text(text):
@@ -939,6 +1000,7 @@ def render(state: FilterState, contract: dict[str, Any]) -> None:
                 error="No data returned for this query.",
             )
             _render_response_area(state, contract)
+            _render_compact_history()
             return
         nnb_med = float(agg["nnb"].median())
         fy_med = float(agg["fee_yield"].median())
@@ -969,6 +1031,7 @@ def render(state: FilterState, contract: dict[str, Any]) -> None:
             table_df=format_df(show, infer_common_formats(show)),
         )
         _render_response_area(state, contract)
+        _render_compact_history()
         return
 
     with st.spinner("Generating response..."):
@@ -987,6 +1050,7 @@ def render(state: FilterState, contract: dict[str, Any]) -> None:
             error=svc_error,
         )
         _render_response_area(state, contract)
+        _render_compact_history()
         return
 
     if extracted is not None:
@@ -1045,4 +1109,5 @@ def render(state: FilterState, contract: dict[str, Any]) -> None:
         placeholder_fallback=placeholder_fallback,
     )
     _render_response_area(state, contract)
+    _render_compact_history()
 
