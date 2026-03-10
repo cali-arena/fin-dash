@@ -31,15 +31,10 @@ from app.ui.guardrails import fallback_note, render_chart_or_fallback, render_em
 from app.ui.theme import apply_enterprise_plotly_style, safe_render_plotly
 
 try:
-    from app.llm.claude import claude_narrative_from_payload
-except ImportError:
-    def claude_narrative_from_payload(_payload: dict[str, Any]) -> str:
-        return ""
-
-try:
-    from app.services.llm_client import LLMError, generate_market_intelligence
+    from app.services.llm_client import LLMError, generate_data_narrative, generate_market_intelligence
 except ImportError:
     generate_market_intelligence = None  # type: ignore[assignment]
+    generate_data_narrative = None  # type: ignore[assignment]
     LLMError = Exception  # type: ignore[misc, assignment]
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -504,6 +499,22 @@ LLM_API_KEY_KEY = "nlq_llm_api_key"
 
 CLAUDE_MODELS = ["claude-3-5-sonnet-latest", "claude-3-7-sonnet-latest"]
 OPENAI_MODELS = ["gpt-4.1-mini", "gpt-4.1"]
+
+
+def _get_data_narrative(payload: dict[str, Any]) -> str:
+    """Data Questions narrative using only UI session-state key; no env/secrets. Returns '' if no key or not Claude."""
+    provider = st.session_state.get(LLM_PROVIDER_KEY) or ""
+    if "Claude" not in provider:
+        return ""
+    api_key = (st.session_state.get(LLM_API_KEY_KEY) or "").strip()
+    if not api_key or api_key == "your-key-here":
+        return ""
+    model = (st.session_state.get(LLM_MODEL_KEY) or "").strip()
+    if not model:
+        return ""
+    if generate_data_narrative is None:
+        return ""
+    return generate_data_narrative(api_key, model, payload)
 
 
 def _render_prompt_presets(is_data_mode: bool) -> None:
@@ -1076,7 +1087,7 @@ def render(state: FilterState, contract: dict[str, Any]) -> None:
             },
             "top_rows_preview": out_df.to_dict(orient="records"),
         }
-        narrative = claude_narrative_from_payload(narrative_payload)
+        narrative = _get_data_narrative(narrative_payload)
         if not (narrative or "").strip():
             narrative = (
                 "For the selected month, the difference between AUM growth and organic growth is shown in the verified table. "
@@ -1165,7 +1176,7 @@ def render(state: FilterState, contract: dict[str, Any]) -> None:
             "numbers": {"nnb_median": nnb_med, "fee_yield_median": fy_med, "flagged_count": int(len(flagged))},
             "top_rows_preview": show.head(10).to_dict(orient="records"),
         }
-        narrative = claude_narrative_from_payload(narrative_payload)
+        narrative = _get_data_narrative(narrative_payload)
         if not (narrative or "").strip():
             narrative = f"Detected {len(flagged)} ticker(s) with high NNB and low fee yield versus peer medians in the selected window."
         full_narrative = summary_md + "\n\n" + narrative
@@ -1236,7 +1247,7 @@ def render(state: FilterState, contract: dict[str, Any]) -> None:
         "deterministic_summary": bullets,
         "top_rows_preview": (result.data.head(5).to_dict(orient="records") if isinstance(result.data, pd.DataFrame) and not result.data.empty else []),
     }
-    narrative = claude_narrative_from_payload(narrative_payload)
+    narrative = _get_data_narrative(narrative_payload)
     narrative_text = headline
     if bullets:
         narrative_text += "\n".join([f"- {b}" for b in bullets]) + "\n\n"
@@ -1245,7 +1256,7 @@ def render(state: FilterState, contract: dict[str, Any]) -> None:
         placeholder_fallback = None
     else:
         narrative_text += "Verified output is shown below."
-        placeholder_fallback = "Set ANTHROPIC_API_KEY to enable narrative over verified outputs."
+        placeholder_fallback = "Add API key in LLM settings (Claude) to include narrative over verified outputs."
 
     _set_nlq_response(
         intent="data_question",

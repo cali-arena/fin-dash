@@ -1,16 +1,25 @@
 """
-LLM adapter for Intelligence Desk Market Intelligence mode.
-Supports Claude (Anthropic) and OpenAI. API key and model are passed by the caller.
-No secrets are stored in this module.
+LLM adapter for Intelligence Desk. No env/secrets; API key only from caller (UI session state).
+- Market Intelligence: generate_market_intelligence(provider, model, api_key, prompt, context)
+- Data narrative (optional): generate_data_narrative(api_key, model, payload) — Claude only, lazy import.
 """
 from __future__ import annotations
 
+import json
 import logging
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
 LLM_ERROR_AUTH = "API request failed: check your API key and try again."
 LLM_ERROR_GENERIC = "The provider could not generate a response. Please try again or check your key."
+
+SYSTEM_PROMPT_DATA_NARRATIVE = (
+    "You are a concise analyst. You will receive a JSON payload with verified query results and summary statistics. "
+    "Write a short narrative (2-4 sentences) using ONLY the numbers and facts in the payload. "
+    "Do NOT add, infer, or invent numbers. If the payload is insufficient, say 'I can only describe what is in the result: [summary].' "
+    "Do not perform any calculations."
+)
 
 SYSTEM_PROMPT_MARKET = """You are a market intelligence analyst.
 
@@ -134,3 +143,25 @@ def generate_market_intelligence(
         raise LLMError(LLM_ERROR_GENERIC) from e
 
     return answer, meta_label
+
+
+def generate_data_narrative(api_key: str, model: str, payload: dict[str, Any]) -> str:
+    """
+    Optional narrative for Data Questions. Uses only the provided api_key (from UI session state).
+    No env or secrets. Lazy-imports Anthropic inside the request.
+    Returns empty string if key missing or on any failure (caller shows verified result without narrative).
+    """
+    key = (api_key or "").strip()
+    if not key or key == "your-key-here":
+        return ""
+    model = (model or "").strip()
+    if not model:
+        return ""
+    try:
+        user_content = "Payload (use only these facts and numbers):\n" + json.dumps(payload, indent=2, default=str)
+        return _call_claude(model, key, SYSTEM_PROMPT_DATA_NARRATIVE, user_content, max_tokens=512)
+    except LLMError:
+        return ""
+    except Exception:
+        logger.exception("Data narrative generation failed")
+        return ""
