@@ -6,11 +6,10 @@ Claude never performs calculations or touches raw internal data.
 """
 from __future__ import annotations
 
-import json
 import re
 from calendar import monthrange
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import date
 from pathlib import Path
 from typing import Any, Callable
 
@@ -18,18 +17,13 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-from app.data.data_gateway import Q_CHANNEL_MONTHLY, run_query
+from app.data.data_gateway import Q_CHANNEL_MONTHLY, Q_TICKER_MONTHLY, run_query
 from app.nlq.deterministic_summary import build_deterministic_summary
 from app.nlq.executor import QueryResult, execute_queryspec
-from app.nlq.explain import (
-    build_explain_payload,
-    llm_explain,
-    validate_explanation_numbers,
-)
 from app.nlq.governance import GovernanceError, load_dim_registry, load_metric_registry, validate_queryspec
 from app.nlq.market_search import search_market_context
-from app.nlq.parser import ParseError, parse_nlq, to_json
-from app.state import FilterState, filter_state_to_gateway_dict, get_filter_state
+from app.nlq.parser import ParseError, parse_nlq
+from app.state import FilterState, filter_state_to_gateway_dict
 from app.nlq.executor import EXECUTOR_TIMEOUT_MS
 from app.ui.formatters import fmt_percent, format_df, infer_common_formats
 from app.ui.exports import render_export_buttons
@@ -44,16 +38,7 @@ except ImportError:
     def claude_narrative_from_payload(_payload: dict[str, Any]) -> str:
         return ""
 
-try:
-    from app.observability import render_obs_panel
-except ImportError:
-    def render_obs_panel(_tab_id: str) -> None:
-        pass
-
-from app.ui.observability import render_observability_panel
-
 ROOT = Path(__file__).resolve().parents[2]
-CHAT_HISTORY_KEY = "nlq_chat_history"
 KNOWN_ETF_TICKERS = frozenset({"AGG", "HYG", "TIP", "MUB", "MBB", "IUSB", "SUB"})
 
 
@@ -87,6 +72,15 @@ def _classify_query_route(text: str) -> QueryRoute:
     - ambiguous: mixed signals; fallback to selected mode
     """
     t = _normalize_text(text)
+    explicit_market_phrases = (
+        "latest outlook",
+        "current outlook",
+        "major asset classes",
+        "rate expectations",
+        "market outlook",
+    )
+    if any(p in t for p in explicit_market_phrases):
+        return QueryRoute(route="market_intelligence", reason="question asks for external market outlook")
     market_terms = (
         "fed", "inflation", "macro", "sentiment", "competitor", "competitors",
         "market conditions", "rates", "treasury", "ecb", "boe", "geopolitical",
@@ -312,26 +306,18 @@ def _apply_threshold_to_result(result: QueryResult, op: str | None, value: float
     return out
 
 
-def _render_chat_history() -> None:
-    hist = st.session_state.get(CHAT_HISTORY_KEY) or []
-    if not hist:
-        return
-    st.markdown("#### Conversation")
-    for msg in hist:
-        role = msg.get("role", "assistant")
-        with st.chat_message("user" if role == "user" else "assistant"):
-            st.markdown(msg.get("text", ""))
-
-
 def _load_value_catalog(gateway_dict: dict[str, Any], root: Path) -> dict[str, set[str]]:
     """
     Build value_catalog (distinct values per dim) from gateway. Cached by dataset_version via run_query.
     Returns dict of dim -> set of values. If data not available, return empty sets.
     """
     try:
-        df = run_query(Q_CHANNEL_MONTHLY, gateway_dict, root=root)
+        df = run_query(Q_TICKER_MONTHLY, gateway_dict, root=root)
     except Exception:
-        return {}
+        try:
+            df = run_query(Q_CHANNEL_MONTHLY, gateway_dict, root=root)
+        except Exception:
+            return {}
     if df is None or df.empty:
         return {}
     catalog: dict[str, set[str]] = {}
@@ -366,34 +352,6 @@ def _execute_data_query_service(
     except GovernanceError as e:
         return None, f"Governance error: {e}"
     return result, None
-
-
-def _render_parse_error(err: ParseError) -> None:
-    """Governed error block: render_empty_state with message + recovery hint listing suggestions."""
-    message = err.message or "Parse failed."
-    suggestions = err.suggestions or {}
-    hint_parts: list[str] = []
-    if isinstance(suggestions, dict):
-        for key in ("metrics", "dimensions", "values"):
-            items = suggestions.get(key)
-            if items is None:
-                continue
-            if isinstance(items, dict):
-                hint_parts.append(f"{key}: {', '.join(str(v) for v in list(items.values())[:5])}")
-            elif isinstance(items, (list, tuple)):
-                hint_parts.append(f"{key}: {', '.join(str(x) for x in items[:5])}")
-            else:
-                hint_parts.append(f"{key}: {items}")
-    recovery_hint = (
-        "Try one of: " + "; ".join(hint_parts)
-        if hint_parts
-        else "Rephrase the question using portfolio metrics, filters, and a time window."
-    )
-    render_empty_state(message, recovery_hint, icon="!")
-    _render_supported_question_examples()
-    if err.details:
-        with st.expander("Details", expanded=False):
-            st.json(err.details)
 
 
 def _metric_label(result: QueryResult) -> str:
@@ -514,20 +472,7 @@ def _render_result(
     render_chart(result, full_export_provider=full_export_provider, allow_full=allow_full)
 
 
-MARKET_INTELLIGENCE_LABEL = (
-    "**Market Intelligence** - this answer draws on external sources, not your internal data."
-)
-INTERNAL_DATA_LABEL = (
-    "**Internal Data Answer** - this result is generated by deterministic governed Python logic over your internal dataset."
-)
-
-DATA_PROMPTS = [
-    "Show net new business by channel for YTD and highlight the top contributors.",
-    "Which ETFs have the highest net new flow this quarter?",
-    "Compare fee yield by product ticker for the last 12 months.",
-    "Identify channels with negative market impact but positive NNB.",
-]
-
+# Spec: 4 prompt presets per mode (client spec)
 MARKET_PROMPTS = [
     "What are current Fed rate expectations and how could they affect multi-asset flows?",
     "Summarize this week's global equity and bond market drivers.",
@@ -535,64 +480,152 @@ MARKET_PROMPTS = [
     "How are inflation surprises affecting duration and credit positioning?",
 ]
 
-SUPPORTED_DATA_QUESTION_EXAMPLES = [
-    "Contributors in Broker Dealer channel with NNB above $100k",
-    "ETFs with high NNB but low fee yield in Q3",
-    "Difference between organic growth and AUM growth in June",
-    "Products in Wealth channel where fee yield is below 0.5%",
+DATA_PROMPTS = [
+    "Which ETFs had high NNB but low fee yield in Q3?",
+    "Show products in Wealth channel where fee yield is below 0.5%.",
+    "Tell me about contributors in Broker Dealer with NNB above $100k.",
+    "What drove the difference between organic growth and AUM growth in June?",
 ]
 
+PLACEHOLDER_DATA = "Which ETFs had high NNB but low fee yield in Q3?"
+PLACEHOLDER_MARKET = "What is the latest outlook for ETF inflows across major asset classes?"
 
-def _render_supported_question_examples() -> None:
-    st.markdown("**Try questions like:**")
-    for q in SUPPORTED_DATA_QUESTION_EXAMPLES:
-        st.markdown(f"- {q}")
+NLQ_RESPONSE_KEY = "nlq_response"
 
 
-def _render_active_filter_scope(state: FilterState) -> None:
+def _render_prompt_presets(is_data_mode: bool) -> None:
+    """Four presets in a 2x2 grid."""
+    prompts = DATA_PROMPTS if is_data_mode else MARKET_PROMPTS
+    for row in range(0, 4, 2):
+        cols = st.columns(2)
+        for col_idx, i in enumerate(range(row, min(row + 2, 4))):
+            with cols[col_idx]:
+                if st.button(
+                    prompts[i],
+                    key=f"nlq_preset_{'data' if is_data_mode else 'market'}_{i}",
+                    use_container_width=True,
+                ):
+                    st.session_state["nlq_question"] = prompts[i]
+
+
+def _render_active_scope(state: FilterState) -> None:
+    """Single subtle line: portfolio scope and reporting window."""
     scope = "Enterprise-wide portfolio"
-    slice_dim = getattr(state, "slice_dim", None)
-    slice_value = getattr(state, "slice_value", None)
-    if slice_dim and slice_value:
-        scope = f"{slice_dim}: {slice_value}"
-    date_start = getattr(state, "date_start", None)
-    date_end = getattr(state, "date_end", None)
-    if date_start and date_end:
-        st.caption(f"Active portfolio scope: {scope}. Reporting window: {date_start} to {date_end}.")
+    if getattr(state, "slice_dim", None) and getattr(state, "slice_value", None):
+        scope = f"{state.slice_dim}: {state.slice_value}"
+    start = getattr(state, "date_start", None)
+    end = getattr(state, "date_end", None)
+    if start and end:
+        st.caption(f"Active portfolio scope: {scope}. Reporting window: {start} to {end}.")
     else:
         st.caption(f"Active portfolio scope: {scope}.")
 
 
-def _render_prompt_presets(is_data_mode: bool) -> None:
-    prompts = DATA_PROMPTS if is_data_mode else MARKET_PROMPTS
-    st.caption("Prompt presets")
-    cols = st.columns(2)
-    for i, prompt in enumerate(prompts):
-        with cols[i % 2]:
-            if st.button(prompt, key=f"nlq_preset_{'data' if is_data_mode else 'market'}_{i}", use_container_width=True):
-                st.session_state["nlq_question"] = prompt
+def _set_nlq_response(
+    *,
+    intent: str,
+    header: str,
+    subtitle: str,
+    narrative: str = "",
+    table_df: pd.DataFrame | None = None,
+    chart_result: QueryResult | None = None,
+    full_export_provider: Callable[[], pd.DataFrame] | None = None,
+    error: str | None = None,
+    placeholder_fallback: str | None = None,
+) -> None:
+    """Store one response for the unified response area. Table/chart rendered from table_df and chart_result."""
+    st.session_state[NLQ_RESPONSE_KEY] = {
+        "intent": intent,
+        "header": header,
+        "subtitle": subtitle,
+        "narrative": narrative,
+        "table_df": table_df,
+        "chart_result": chart_result,
+        "full_export_provider": full_export_provider,
+        "error": error,
+        "placeholder_fallback": placeholder_fallback,
+    }
+
+
+def _render_response_area(state: FilterState, contract: dict[str, Any]) -> None:
+    """Single response container: header, subtitle, narrative, optional table, optional chart. Empty/error/fallback states."""
+    resp = st.session_state.get(NLQ_RESPONSE_KEY)
+    if resp is None:
+        st.markdown("---")
+        st.markdown(
+            "<div class='empty-state-card'>"
+            "<div class='empty-state-title'>Result will appear here</div>"
+            "<div>Choose a mode, ask a question, and the result will appear here.</div>"
+            "</div>",
+            unsafe_allow_html=True,
+        )
+        return
+
+    st.markdown("---")
+    header = resp.get("header") or "Response"
+    subtitle = resp.get("subtitle") or ""
+    st.subheader(header)
+    if subtitle:
+        st.caption(subtitle)
+
+    error = resp.get("error")
+    if error:
+        st.error(error)
+        return
+
+    placeholder_fallback = resp.get("placeholder_fallback")
+    if placeholder_fallback:
+        st.info(placeholder_fallback)
+
+    narrative = (resp.get("narrative") or "").strip()
+    if narrative:
+        st.markdown(narrative)
+
+    chart_result = resp.get("chart_result")
+    if chart_result is not None:
+        render_chart(
+            chart_result,
+            full_export_provider=resp.get("full_export_provider"),
+            allow_full=False,
+        )
+
+    table_df = resp.get("table_df")
+    if table_df is not None and isinstance(table_df, pd.DataFrame) and not table_df.empty:
+        st.dataframe(table_df, height=420, use_container_width=True, hide_index=True)
+        if resp.get("full_export_provider"):
+            render_export_buttons(
+                table_df,
+                resp["full_export_provider"],
+                "tab3_nlq_result",
+                allow_full=False,
+            )
 
 
 def render(state: FilterState, contract: dict[str, Any]) -> None:
-    """Tab 3: two modes - Data Questions (deterministic query + Claude narrative) or Market Intelligence (external + Claude)."""
+    """Intelligence Desk: minimal institutional UI — mode, presets, input, single response area."""
+    _ = contract
+
+    # --- 1. Page header ---
     st.title("Intelligence Desk")
     st.markdown(
         "<div class='section-subtitle'>Ask data questions over your internal book or market intelligence over external sources. Results are verified; narrative is optional.</div>",
         unsafe_allow_html=True,
     )
-    if CHAT_HISTORY_KEY not in st.session_state:
-        st.session_state[CHAT_HISTORY_KEY] = []
+
+    # --- 2. Mode guidance banner ---
     st.markdown(
-        "<div class='section-frame'>"
+        "<div class='insight-banner'>"
         "<strong>Two ways to ask:</strong> "
-        "<strong>Data Questions</strong> = your internal data, governed query, verified result. "
-        "<strong>Market Intelligence</strong> = external sources (rates, macro), answer clearly labeled as external."
+        "Data Questions = your internal data, governed query, verified result. "
+        "Market Intelligence = external sources (rates, macro, sentiment), clearly labeled as external."
         "</div>",
         unsafe_allow_html=True,
     )
+
+    # --- 3. Mode selector ---
     st.markdown("**Choose mode**")
     mode = st.radio(
-        "Mode",
+        "Choose mode",
         ["Data Questions", "Market Intelligence"],
         key="nlq_mode",
         horizontal=True,
@@ -600,98 +633,95 @@ def render(state: FilterState, contract: dict[str, Any]) -> None:
         label_visibility="collapsed",
     )
     is_data_mode = mode == "Data Questions"
-    mode_label = "Data Questions"
-    mode_short = "Internal data - verified numbers - optional narrative"
-    if not is_data_mode:
-        mode_label = "Market Intelligence"
-        mode_short = "External sources - answer labeled as Market Intelligence"
-    st.markdown(
-        f"<div class='nlq-mode-badge'>"
-        f"<div class='nlq-mode-label'>Current mode: {mode_label}</div>"
-        f"{mode_short}"
-        f"</div>",
-        unsafe_allow_html=True,
-    )
-    _render_chat_history()
-    _render_active_filter_scope(state)
-    st.markdown("---")
-    st.subheader("Ask your question" if is_data_mode else "Ask a market intelligence question")
+
+    # --- 4. Current mode card ---
     if is_data_mode:
-        st.caption("We parse your question, run a governed query on internal data, then show verified results and an optional narrative.")
-        placeholder = "e.g., Show net new business by channel over the last 12 months"
+        st.markdown(
+            "<div class='nlq-mode-badge'>"
+            "<div class='nlq-mode-label'>Current mode</div>"
+            "<strong>DATA QUESTIONS</strong><br/>"
+            "Verified answers from your internal portfolio data. Python performs calculations and filtering before any narrative is generated."
+            "</div>",
+            unsafe_allow_html=True,
+        )
     else:
-        st.caption("Answers use external sources and are labeled as Market Intelligence. Placeholder may appear if external search is not configured.")
-        placeholder = "e.g., What are current Fed rate expectations?"
+        st.markdown(
+            "<div class='nlq-mode-badge'>"
+            "<div class='nlq-mode-label'>Current mode</div>"
+            "<strong>MARKET INTELLIGENCE</strong><br/>"
+            "External sources — answer labeled as Market Intelligence."
+            "</div>",
+            unsafe_allow_html=True,
+        )
+
+    # --- 5. Active scope line ---
+    _render_active_scope(state)
+
+    # --- 6. Prompt presets (2x2) ---
     _render_prompt_presets(is_data_mode)
-    with st.expander("Example prompts", expanded=False):
-        if is_data_mode:
-            st.markdown("- Show net new business by channel over the last 12 months")
-            st.markdown("- Compare ETF flows by geography YTD")
-            st.markdown("- Which channels had strongest organic growth last quarter?")
-            st.markdown("- Which products are driving fee yield improvement?")
-        else:
-            st.markdown("- What are current Fed rate expectations?")
-            st.markdown("- How did equity markets perform last month?")
-            st.markdown("- What are current drivers of ETF flows globally?")
+
+    # --- 7. Input section ---
+    placeholder = PLACEHOLDER_DATA if is_data_mode else PLACEHOLDER_MARKET
     question = st.text_input(
-        "Question" if is_data_mode else "Market question",
+        "Ask a question",
         key="nlq_question",
         placeholder=placeholder,
+        label_visibility="visible",
     )
-    run_clicked = st.button("Generate response", key="nlq_run_btn")
+    col_btn1, col_btn2, _ = st.columns([1, 1, 4])
+    with col_btn1:
+        run_clicked = st.button("Generate response", key="nlq_run_btn")
+    with col_btn2:
+        clear_clicked = st.button("Clear", key="nlq_clear_btn")
+
+    if clear_clicked:
+        if "nlq_question" in st.session_state:
+            st.session_state["nlq_question"] = ""
+        if NLQ_RESPONSE_KEY in st.session_state:
+            del st.session_state[NLQ_RESPONSE_KEY]
+        st.rerun()
 
     if not run_clicked:
-        render_obs_panel(contract.get("tab_id", "nlq_chat"))
+        _render_response_area(state, contract)
         return
 
     text = (question or "").strip()
     if not text:
         st.warning("Enter a question.")
-        render_obs_panel(contract.get("tab_id", "nlq_chat"))
+        _render_response_area(state, contract)
         return
-    st.session_state[CHAT_HISTORY_KEY].append({"role": "user", "text": text, "mode": mode})
 
     route = _classify_query_route(text)
     route_to_market = False
     if route.route == "market_intelligence":
         route_to_market = True
-        if is_data_mode:
-            st.caption("Routed to Market Intelligence based on question intent.")
     elif route.route == "data_question":
         route_to_market = False
-        if not is_data_mode:
-            st.caption("Routed to Data Questions based on question intent.")
     else:
         route_to_market = not is_data_mode
-        st.caption(f"Intent is mixed; using selected mode ({mode}).")
 
     # --- Market Intelligence path: external search + Claude; label answer as external ---
     if route_to_market:
-        with st.spinner("Searching external sources..."):
+        with st.spinner("Generating response..."):
             context = search_market_context(text)
-        with st.spinner("Generating answer..."):
             answer = claude_market_intelligence(text, context)
-        st.markdown(
-            "<div class='section-frame'>"
-            "<strong>Market Intelligence</strong> - This answer uses external sources, not your internal data."
-            "</div>",
-            unsafe_allow_html=True,
-        )
-        st.subheader("Market Intelligence answer")
-        with st.expander("External context used", expanded=False):
-            st.code(context or "(no external context retrieved)", language="text")
+
         if (answer or "").strip():
-            st.markdown(answer)
-            st.session_state[CHAT_HISTORY_KEY].append(
-                {"role": "assistant", "mode": mode, "text": f"**Market Intelligence**\n\n{answer}"}
+            _set_nlq_response(
+                intent="market_intelligence",
+                header="Market Intelligence — external sources",
+                subtitle="This answer reflects external context, not your internal book.",
+                narrative=answer,
             )
         else:
-            st.caption("External intelligence is currently unavailable. Configure ANTHROPIC_API_KEY and optional search provider integration.")
-            st.session_state[CHAT_HISTORY_KEY].append(
-                {"role": "assistant", "mode": mode, "text": "Market Intelligence is not available. Configure external search and ANTHROPIC_API_KEY to enable it."}
+            _set_nlq_response(
+                intent="market_intelligence",
+                header="Market Intelligence — external sources",
+                subtitle="This answer reflects external context, not your internal book.",
+                narrative="",
+                placeholder_fallback="External intelligence is not available. Configure ANTHROPIC_API_KEY and optional search provider to enable it.",
             )
-        render_observability_panel(filters=state, drill_state=None, queryspec=None)
-        render_obs_panel(contract.get("tab_id", "nlq_chat"))
+        _render_response_area(state, contract)
         return
 
     # --- Data Questions path: classify intent, extract params, deterministic query, verified result -> Claude narrative only ---
@@ -699,15 +729,17 @@ def render(state: FilterState, contract: dict[str, Any]) -> None:
         metric_reg = load_metric_registry()
         dim_reg = load_dim_registry()
     except (FileNotFoundError, ValueError) as e:
-        st.error(f"Registries failed to load: {e}")
-        render_obs_panel(contract.get("tab_id", "nlq_chat"))
+        _set_nlq_response(
+            intent="data_question",
+            header="Verified Data Result",
+            subtitle="Calculated from your internal filtered dataset.",
+            error=f"Registries failed to load: {e}",
+        )
+        _render_response_area(state, contract)
         return
 
     gateway_dict = filter_state_to_gateway_dict(state)
     value_catalog = _load_value_catalog(gateway_dict, ROOT)
-    if not value_catalog:
-        st.caption("Some filter values are unavailable in this run. Query validation will still proceed with governed metrics and dimensions.")
-
     today = date.today()
     extracted, qs_from_business = _intent_and_queryspec(text, metric_reg, dim_reg, value_catalog, today)
     special_intent = bool(
@@ -722,28 +754,30 @@ def render(state: FilterState, contract: dict[str, Any]) -> None:
         else:
             spec_or_error = parse_nlq(text, metric_reg, dim_reg, value_catalog, today=today)
             if isinstance(spec_or_error, ParseError):
-                _render_parse_error(spec_or_error)
-                if st.session_state.get("dev_mode"):
-                    with st.expander("Debug (dev)", expanded=False):
-                        st.json(to_json(spec_or_error))
-                render_obs_panel(contract.get("tab_id", "nlq_chat"))
+                _set_nlq_response(
+                    intent="data_question",
+                    header="Verified Data Result",
+                    subtitle="Calculated from your internal filtered dataset.",
+                    error=spec_or_error.message or "Parse failed.",
+                )
+                _render_response_area(state, contract)
                 return
             qs = spec_or_error
 
-    st.markdown(
-        "<div class='section-frame'>"
-        "<strong>Internal data answer</strong> - This result is from a governed query over your internal dataset. Numbers are verified; narrative is generated from these facts only."
-        "</div>",
-        unsafe_allow_html=True,
-    )
-    st.subheader("Internal data answer")
-
     try:
-        with st.spinner("Loading governed dataset..."):
-            df = run_query(Q_CHANNEL_MONTHLY, gateway_dict, root=ROOT)
+        with st.spinner("Generating response..."):
+            try:
+                df = run_query(Q_TICKER_MONTHLY, gateway_dict, root=ROOT)
+            except Exception:
+                df = run_query(Q_CHANNEL_MONTHLY, gateway_dict, root=ROOT)
     except Exception as e:
-        st.error(f"Data load failed: {e}")
-        render_obs_panel(contract.get("tab_id", "nlq_chat"))
+        _set_nlq_response(
+            intent="data_question",
+            header="Verified Data Result",
+            subtitle="Calculated from your internal filtered dataset.",
+            error=f"Data load failed: {e}",
+        )
+        _render_response_area(state, contract)
         return
 
     allowlist = {
@@ -770,8 +804,14 @@ def render(state: FilterState, contract: dict[str, Any]) -> None:
         # Deterministic decomposition answer from governed monthly inputs.
         base = df.copy()
         if base is None or base.empty:
-            render_empty_state("No data returned for this query.", "Adjust filters or time range.")
-            render_obs_panel(contract.get("tab_id", "nlq_chat"))
+            _set_nlq_response(
+                intent="data_question",
+                header="Verified Data Result",
+                subtitle="Calculated from your internal filtered dataset.",
+                narrative="",
+                error="No data returned for this query.",
+            )
+            _render_response_area(state, contract)
             return
         base["month_end"] = pd.to_datetime(base.get("month_end"), errors="coerce")
         for c in ("begin_aum", "end_aum", "nnb"):
@@ -787,8 +827,14 @@ def render(state: FilterState, contract: dict[str, Any]) -> None:
             .sort_values("month_end")
         )
         if monthly.empty:
-            render_empty_state("No data returned for this query.", "Adjust filters or time range.")
-            render_obs_panel(contract.get("tab_id", "nlq_chat"))
+            _set_nlq_response(
+                intent="data_question",
+                header="Verified Data Result",
+                subtitle="Calculated from your internal filtered dataset.",
+                narrative="",
+                error="No data returned for this query.",
+            )
+            _render_response_area(state, contract)
             return
         latest = monthly.iloc[-1]
         begin = float(latest.get("begin_aum")) if pd.notna(latest.get("begin_aum")) else float("nan")
@@ -811,15 +857,12 @@ def render(state: FilterState, contract: dict[str, Any]) -> None:
                 }
             ]
         )
-        st.subheader("Deterministic Summary")
-        st.markdown(
+        summary_md = (
             f"- Month: **{out_df.iloc[0]['Month End']}**\n"
             f"- Organic growth rate: **{fmt_percent(ogr, decimals=2)}**\n"
             f"- AUM growth rate: **{fmt_percent(aum_growth, decimals=2)}**\n"
             f"- Difference: **{fmt_percent(delta, decimals=2)}**"
         )
-        st.subheader("Verified result")
-        st.dataframe(format_df(out_df, infer_common_formats(out_df)), use_container_width=True, hide_index=True)
         narrative_payload = {
             "query": text,
             "numbers": {
@@ -830,26 +873,33 @@ def render(state: FilterState, contract: dict[str, Any]) -> None:
             "top_rows_preview": out_df.to_dict(orient="records"),
         }
         narrative = claude_narrative_from_payload(narrative_payload)
-        st.markdown("#### Narrative Summary")
-        if (narrative or "").strip():
-            st.markdown(narrative)
-            st.session_state[CHAT_HISTORY_KEY].append({"role": "assistant", "mode": mode, "text": narrative})
-        else:
-            fallback = (
-                "For the selected month, the difference between AUM growth and organic growth is shown in the verified table above. "
+        if not (narrative or "").strip():
+            narrative = (
+                "For the selected month, the difference between AUM growth and organic growth is shown in the verified table. "
                 "AUM growth reflects total balance movement, while organic growth isolates net new business."
             )
-            st.markdown(fallback)
-            st.session_state[CHAT_HISTORY_KEY].append({"role": "assistant", "mode": mode, "text": fallback})
-        render_observability_panel(filters=state, drill_state=None, queryspec=None)
-        render_obs_panel(contract.get("tab_id", "nlq_chat"))
+        full_narrative = summary_md + "\n\n" + narrative
+        _set_nlq_response(
+            intent="data_question",
+            header="Verified Data Result",
+            subtitle="Calculated from your internal filtered dataset.",
+            narrative=full_narrative,
+            table_df=format_df(out_df, infer_common_formats(out_df)),
+        )
+        _render_response_area(state, contract)
         return
 
     if extracted is not None and extracted.intent == "growth_quality_flags":
         base = df.copy()
         if base is None or base.empty:
-            render_empty_state("No data returned for this query.", "Adjust filters or time range.")
-            render_obs_panel(contract.get("tab_id", "nlq_chat"))
+            _set_nlq_response(
+                intent="data_question",
+                header="Verified Data Result",
+                subtitle="Calculated from your internal filtered dataset.",
+                narrative="",
+                error="No data returned for this query.",
+            )
+            _render_response_area(state, contract)
             return
         base["month_end"] = pd.to_datetime(base.get("month_end"), errors="coerce")
         for c in ("nnb", "nnf"):
@@ -863,8 +913,13 @@ def render(state: FilterState, contract: dict[str, Any]) -> None:
             if dim in base.columns and vals:
                 base = base[base[dim].astype(str).isin([str(v) for v in vals])]
         if "product_ticker" not in base.columns:
-            render_empty_state("Ticker data not available.", "Try a different question or data slice.")
-            render_obs_panel(contract.get("tab_id", "nlq_chat"))
+            _set_nlq_response(
+                intent="data_question",
+                header="Verified Data Result",
+                subtitle="Calculated from your internal filtered dataset.",
+                error="Ticker data not available.",
+            )
+            _render_response_area(state, contract)
             return
         agg = base.groupby("product_ticker", as_index=False).agg(nnb=("nnb", "sum"), nnf=("nnf", "sum"))
         if "etf" in _normalize_text(text):
@@ -876,46 +931,47 @@ def render(state: FilterState, contract: dict[str, Any]) -> None:
         )
         agg = agg.dropna(subset=["nnb", "fee_yield"])
         if agg.empty:
-            render_empty_state("No data returned for this query.", "Adjust filters or time range.")
-            render_obs_panel(contract.get("tab_id", "nlq_chat"))
+            _set_nlq_response(
+                intent="data_question",
+                header="Verified Data Result",
+                subtitle="Calculated from your internal filtered dataset.",
+                narrative="",
+                error="No data returned for this query.",
+            )
+            _render_response_area(state, contract)
             return
         nnb_med = float(agg["nnb"].median())
         fy_med = float(agg["fee_yield"].median())
         flagged = agg[(agg["nnb"] >= nnb_med) & (agg["fee_yield"] < fy_med)].copy()
         flagged = flagged.sort_values(["nnb", "fee_yield"], ascending=[False, True]).head(20)
 
-        st.subheader("Deterministic Summary")
-        st.markdown(
+        show = flagged.rename(columns={"product_ticker": "Ticker", "nnb": "NNB", "nnf": "NNF", "fee_yield": "Fee Yield"})
+        summary_md = (
             f"- Universe rows: **{len(agg)}**\n"
             f"- NNB median: **{nnb_med:,.0f}**\n"
             f"- Fee yield median: **{fmt_percent(fy_med, decimals=2)}**\n"
             f"- Flagged (high NNB + low fee yield): **{len(flagged)}**"
         )
-        st.subheader("Verified result")
-        show = flagged.rename(columns={"product_ticker": "Ticker", "nnb": "NNB", "nnf": "NNF", "fee_yield": "Fee Yield"})
-        st.dataframe(format_df(show, infer_common_formats(show)), use_container_width=True, hide_index=True)
-
         narrative_payload = {
             "query": text,
             "numbers": {"nnb_median": nnb_med, "fee_yield_median": fy_med, "flagged_count": int(len(flagged))},
             "top_rows_preview": show.head(10).to_dict(orient="records"),
         }
         narrative = claude_narrative_from_payload(narrative_payload)
-        st.markdown("#### Narrative Summary")
-        if (narrative or "").strip():
-            st.markdown(narrative)
-            st.session_state[CHAT_HISTORY_KEY].append({"role": "assistant", "mode": mode, "text": narrative})
-        else:
-            fallback = (
-                f"Detected {len(flagged)} ticker(s) with high NNB and low fee yield versus peer medians in the selected window."
-            )
-            st.markdown(fallback)
-            st.session_state[CHAT_HISTORY_KEY].append({"role": "assistant", "mode": mode, "text": fallback})
-        render_observability_panel(filters=state, drill_state=None, queryspec=None)
-        render_obs_panel(contract.get("tab_id", "nlq_chat"))
+        if not (narrative or "").strip():
+            narrative = f"Detected {len(flagged)} ticker(s) with high NNB and low fee yield versus peer medians in the selected window."
+        full_narrative = summary_md + "\n\n" + narrative
+        _set_nlq_response(
+            intent="data_question",
+            header="Verified Data Result",
+            subtitle="Calculated from your internal filtered dataset.",
+            narrative=full_narrative,
+            table_df=format_df(show, infer_common_formats(show)),
+        )
+        _render_response_area(state, contract)
         return
 
-    with st.spinner("Running deterministic query..."):
+    with st.spinner("Generating response..."):
         result, svc_error = _execute_data_query_service(
             qs=qs,
             df=df,
@@ -924,96 +980,69 @@ def render(state: FilterState, contract: dict[str, Any]) -> None:
             allowlist=allowlist,
         )
     if svc_error:
-        st.error(svc_error)
-        if st.session_state.get("dev_mode") and qs is not None:
-            with st.expander("Debug (dev)", expanded=False):
-                st.json(qs.model_dump(mode="json"))
-        render_obs_panel(contract.get("tab_id", "nlq_chat"))
+        _set_nlq_response(
+            intent="data_question",
+            header="Verified Data Result",
+            subtitle="Calculated from your internal filtered dataset.",
+            error=svc_error,
+        )
+        _render_response_area(state, contract)
         return
 
     if extracted is not None:
         result = _apply_threshold_to_result(result, extracted.threshold_op, extracted.threshold_value)
 
     if result.meta.get("status") == "timeout":
-        render_timeout_state("NLQ query", EXECUTOR_TIMEOUT_MS, "Try adding a limit or narrower time range.")
-
-    with st.expander("How This Question Was Interpreted", expanded=False):
-        try:
-            st.json(qs.model_dump(mode="json"))
-        except Exception:
-            st.caption("Unable to render extracted parameters for this query.")
+        _set_nlq_response(
+            intent="data_question",
+            header="Verified Data Result",
+            subtitle="Calculated from your internal filtered dataset.",
+            error=f"NLQ query exceeded time budget ({EXECUTOR_TIMEOUT_MS} ms). Try a narrower time range or limit.",
+        )
+        _render_response_area(state, contract)
+        return
 
     def _full_export_provider() -> pd.DataFrame:
         r = execute_queryspec(qs, df, metric_reg, dim_reg, allowlist, export_mode=True)
         return r.data if r and hasattr(r, "data") and r.data is not None else pd.DataFrame()
 
-    st.subheader("Deterministic Summary")
     bullets = build_deterministic_summary(qs, result)
-    if bullets:
-        st.markdown("\n".join([f"- {b}" for b in bullets]))
-    else:
-        st.caption("No deterministic explanation available for this result.")
-
-    st.subheader("Verified result")
-    _render_result(
-        result,
-        full_export_provider=_full_export_provider,
-        allow_full=st.session_state.get("export_mode_toggle", False),
-    )
-
-    with st.expander("Verified Evidence Summary", expanded=True):
-        st.markdown("\n".join([f"- {b}" for b in bullets]))
+    numbers = result.numbers or {}
+    has_formatted = "formatted" in numbers and numbers.get("formatted") not in (None, "-")
+    has_value = "value" in numbers and numbers.get("value") is not None
+    headline = ""
+    if has_formatted or has_value:
+        label = _metric_label(result)
+        display_val = numbers.get("formatted") if has_formatted else str(numbers.get("value", "-"))
+        headline = f"**{label}:** {display_val}\n\n"
 
     narrative_payload = {
         "query": text,
         "queryspec": qs.model_dump(mode="json"),
-        "numbers": result.numbers or {},
+        "numbers": numbers,
         "meta": result.meta or {},
         "deterministic_summary": bullets,
         "top_rows_preview": (result.data.head(5).to_dict(orient="records") if isinstance(result.data, pd.DataFrame) and not result.data.empty else []),
     }
-    with st.spinner("Generating narrative wording from verified output..."):
-        narrative = claude_narrative_from_payload(narrative_payload)
-    st.markdown("#### Narrative Summary")
+    narrative = claude_narrative_from_payload(narrative_payload)
+    narrative_text = headline
+    if bullets:
+        narrative_text += "\n".join([f"- {b}" for b in bullets]) + "\n\n"
     if (narrative or "").strip():
-        st.markdown(narrative)
-        st.session_state[CHAT_HISTORY_KEY].append({"role": "assistant", "mode": mode, "text": narrative})
+        narrative_text += narrative.strip()
+        placeholder_fallback = None
     else:
-        st.caption("Narrative wording is not available. Set ANTHROPIC_API_KEY to enable narrative over verified outputs.")
-        fallback = "Verified output is shown above. Narrative wording is not available until ANTHROPIC_API_KEY is configured."
-        st.session_state[CHAT_HISTORY_KEY].append({"role": "assistant", "mode": mode, "text": fallback})
+        narrative_text += "Verified output is shown below."
+        placeholder_fallback = "Set ANTHROPIC_API_KEY to enable narrative over verified outputs."
 
-    dataset_version = st.session_state.get("dataset_version")
-    filter_hash = state.filter_state_hash() if hasattr(state, "filter_state_hash") and callable(getattr(state, "filter_state_hash")) else None
-    if st.session_state.get("dev_mode"):
-        executed_at = datetime.now(timezone.utc).isoformat()
-        with st.expander("Audit Trail", expanded=False):
-            st.text(f"dataset_version: {dataset_version or '-'}")
-            st.text(f"filter_hash: {filter_hash or '-'}")
-            st.text(f"executed_at: {executed_at}")
-            st.caption("QuerySpec JSON")
-            qs_json = json.dumps(qs.model_dump(mode="json"), indent=2)
-            st.code(qs_json, language="json")
-
-        explain_enabled = st.toggle("Additional Narrative Check (optional)", value=False, key="nlq_explain_toggle")
-        if explain_enabled:
-            payload = build_explain_payload(qs, result, dataset_version=dataset_version, filter_hash=filter_hash)
-            explanation = llm_explain(payload)
-            if (explanation or "").strip():
-                ok, _ = validate_explanation_numbers(explanation, payload)
-                if ok:
-                    st.markdown("#### Additional Explainability Layer")
-                    st.markdown(explanation)
-                else:
-                    st.warning("Additional explainability output was rejected because it introduced unsupported numbers.")
-
-    if st.session_state.get("dev_mode"):
-        with st.expander("Debug (dev)", expanded=False):
-            st.caption("QuerySpec")
-            st.json(qs.model_dump(mode="json"))
-            st.caption("Executor meta")
-            st.json(result.meta)
-
-    render_observability_panel(filters=state, drill_state=None, queryspec=qs)
-    render_obs_panel(contract.get("tab_id", "nlq_chat"))
+    _set_nlq_response(
+        intent="data_question",
+        header="Verified Data Result",
+        subtitle="Calculated from your internal filtered dataset.",
+        narrative=narrative_text,
+        chart_result=result,
+        full_export_provider=_full_export_provider,
+        placeholder_fallback=placeholder_fallback,
+    )
+    _render_response_area(state, contract)
 

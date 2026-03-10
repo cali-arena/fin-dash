@@ -24,7 +24,7 @@ def _call_claude(system: str, user_content: str, max_tokens: int = 512) -> str:
         from anthropic import Anthropic
         client = Anthropic(api_key=api_key)
         msg = client.messages.create(
-            model="claude-3-5-haiku-20241022",
+            model="claude-3-5-sonnet",
             max_tokens=max_tokens,
             system=system,
             messages=[{"role": "user", "content": user_content}],
@@ -51,7 +51,7 @@ def claude_narrative_from_payload(payload: dict[str, Any]) -> str:
 def claude_market_intelligence(question: str, context: str) -> str:
     """
     Market Intelligence path: Claude receives the user question and external search context.
-    Caller must display the answer with the label: "Market Intelligence — this answer draws on external sources, not your internal data."
+    Caller must display the answer with the label: "Market Intelligence - this answer draws on external sources, not your internal data."
     """
     user_content = f"User question: {question}\n\nContext from external sources:\n{context}"
     return _call_claude(SYSTEM_MARKET_INTELLIGENCE, user_content, max_tokens=1024)

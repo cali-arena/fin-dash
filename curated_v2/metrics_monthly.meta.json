@@ -1,0 +1,11 @@
+{
+  "dataset_version": "535f664f6206",
+  "row_count": 56095,
+  "slice_keys": [
+    "channel",
+    "product_ticker",
+    "src_country",
+    "segment",
+    "sub_segment"
+  ]
+}

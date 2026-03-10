@@ -18,6 +18,6 @@ def get_anthropic_api_key() -> str | None:
             key = (_st.secrets.get("ANTHROPIC_API_KEY") or "").strip()
         except Exception:
             pass
-    if not key:
+    if not key or key == "your-key-here":
         return None
     return key
