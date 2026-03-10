@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import traceback
 from pathlib import Path
 
 # Ensure project root is on path so "app" package resolves (e.g. when run from app/ or IDE)
@@ -11,21 +12,29 @@ if str(_root) not in sys.path:
 
 import streamlit as st
 
-from app.config.contract import ensure_contract_checked, load_ui_contract
-from app.config.tab1_defaults import (
-    get_scope_label_from_state,
-    get_scope_mode_from_state,
-    get_tab1_dimension_keys,
-    TAB1_DEFAULT_PERIOD,
-)
-from app.data_contract import get_data_contract_cached
-from app.data.data_gateway import Q_FIRM_MONTHLY, run_query as gateway_run_query
-from app.pages.dynamic_report import render as render_dynamic_report
-from app.pages.nlq_chat import render as render_nlq_chat
-from app.pages.visualisations import render as render_visualisations
-from app.state import ensure_tab1_defaults_initialized, get_filter_state
-from app.ui.filters import render_global_filters
-from app.ui.theme import configure_plotly_defaults, inject_global_theme_css
+try:
+    from app.config.contract import ensure_contract_checked, load_ui_contract
+    from app.config.tab1_defaults import (
+        get_scope_label_from_state,
+        get_scope_mode_from_state,
+        get_tab1_dimension_keys,
+        TAB1_DEFAULT_PERIOD,
+    )
+    from app.data_contract import get_data_contract_cached
+    from app.data.data_gateway import Q_FIRM_MONTHLY, run_query as gateway_run_query
+    from app.pages.dynamic_report import render as render_dynamic_report
+    from app.pages.nlq_chat import render as render_nlq_chat
+    from app.pages.visualisations import render as render_visualisations
+    from app.state import ensure_tab1_defaults_initialized, get_filter_state
+    from app.ui.filters import render_global_filters
+    from app.ui.theme import configure_plotly_defaults, inject_global_theme_css
+except Exception as _import_err:
+    st.set_page_config(page_title="Finance Dashboard", layout="wide")
+    st.error("App failed during import — check Streamlit Cloud logs.")
+    st.exception(_import_err)
+    with st.expander("Traceback", expanded=True):
+        st.code(traceback.format_exc(), language="text")
+    st.stop()
 
 PAGE_RENDERERS = {
     "visualisations": render_visualisations,
@@ -209,7 +218,6 @@ if __name__ == "__main__":
     try:
         main()
     except Exception as e:
-        import traceback
         st.set_page_config(page_title="Finance Dashboard", layout="wide")
         st.error("Error running app.")
         st.exception(e)
