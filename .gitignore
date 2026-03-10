@@ -47,6 +47,12 @@ htmlcov/
 !analytics.duckdb
 data/curated/*.parquet
 data/agg/*.parquet
+# Production KPI dataset: allow these so Cloud loads same data as localhost
+!data/agg/firm_monthly.parquet
+!data/agg/channel_monthly.parquet
+!data/agg/ticker_monthly.parquet
+!data/agg/geo_monthly.parquet
+!data/agg/segment_monthly.parquet
 
 # Secrets and env
 .env
