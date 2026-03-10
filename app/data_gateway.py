@@ -63,9 +63,11 @@ DEFAULT_TIMEOUT_MS = 1500
 PERF_QUERY_LOG_MAX = 50
 GATEWAY_CACHE_MAX_KEYS = 50
 
-# Dataset version: single source of truth
+# Dataset version and agg: single canonical paths (no fallbacks for parity)
 DATASET_VERSION_META_PATH = "data/curated/metrics_monthly.meta.json"
 DATASET_VERSION_KEY = "dataset_version"
+# Force parquet backend for localhost/cloud parity (set APP_DATA_BACKEND=parquet on both)
+APP_DATA_BACKEND_ENV = "APP_DATA_BACKEND"
 
 VIEWS_MANIFEST_REL = "analytics/duckdb_views_manifest.json"
 DUCKDB_MANIFEST_REL = "analytics/duckdb_manifest.json"
@@ -710,36 +712,36 @@ def get_config(root: Path | None = None) -> dict[str, Any]:
 
 def load_dataset_version(root: Path | None = None) -> str:
     """
-    Read dataset_version: (1) DuckDB meta.dataset_version table if DB exists, (2) data/curated/metrics_monthly.meta.json, (3) curated/ fallback.
-    Raises FileNotFoundError or ValueError with actionable message if all sources missing or invalid.
+    Read dataset_version from single canonical source for parity.
+    When APP_DATA_BACKEND=parquet: only data/curated/metrics_monthly.meta.json (no DuckDB).
+    Otherwise: (1) DuckDB meta table if DB exists, (2) data/curated/metrics_monthly.meta.json only.
+    Raises FileNotFoundError or ValueError if missing or invalid.
     """
     root = Path(root) if root is not None else Path.cwd()
-    # 1) DuckDB meta table if manifest and DB exist
-    try:
-        config = get_config(root)
-        db_path = config.get("db_path")
-        if db_path and Path(db_path).exists():
-            import duckdb
-            con = duckdb.connect(db_path, read_only=True)
-            try:
-                row = con.execute("SELECT dataset_version FROM meta.dataset_version LIMIT 1").fetchone()
-                if row and row[0] and str(row[0]).strip():
-                    return str(row[0]).strip()
-            except Exception:
-                pass
-            finally:
-                con.close()
-    except Exception:
-        pass
-    # 2) Curated meta.json
-    for rel in (DATASET_VERSION_META_PATH, "curated/metrics_monthly.meta.json"):
-        meta_path = root / rel
-        if meta_path.exists():
-            break
-    else:
+    use_parquet_only = os.environ.get(APP_DATA_BACKEND_ENV, "").strip().lower() == "parquet"
+    if not use_parquet_only:
+        try:
+            config = get_config(root)
+            db_path = config.get("db_path")
+            if db_path and Path(db_path).exists():
+                import duckdb
+                con = duckdb.connect(db_path, read_only=True)
+                try:
+                    row = con.execute("SELECT dataset_version FROM meta.dataset_version LIMIT 1").fetchone()
+                    if row and row[0] and str(row[0]).strip():
+                        return str(row[0]).strip()
+                except Exception:
+                    pass
+                finally:
+                    con.close()
+        except Exception:
+            pass
+    meta_path = root / DATASET_VERSION_META_PATH
+    if not meta_path.exists():
         raise FileNotFoundError(
-            f"{DATASET_VERSION_META_PATH} not found at {root / DATASET_VERSION_META_PATH}. "
-            "Run: python etl/build_data.py or pipelines.duckdb.rebuild_analytics_layer."
+            f"Dataset version meta not found: {meta_path}. "
+            f"Required for parity: commit {DATASET_VERSION_META_PATH} and data/agg/*.parquet. "
+            "Run: python etl/build_data.py or ensure data/curated and data/agg exist."
         )
     try:
         data = json.loads(meta_path.read_text(encoding="utf-8"))
@@ -1669,7 +1671,12 @@ def run_query(
     """
     Single entrypoint for all queries. Governed queries (RUN_QUERY_ALLOWED) use templated path and may return dict.
     Base queries use pyramid.get_filtered and return DataFrame.
+    When root is None and Streamlit app_root is set, use app_root for parity (main sets app_root from ROOT).
     """
+    if root is None and st is not None:
+        app_root = st.session_state.get("app_root")
+        if app_root and str(app_root).strip():
+            root = Path(app_root)
     if query_name in RUN_QUERY_ALLOWED:
         # Normalize any state-like object (including stale/reloaded class instances)
         # to a canonical FilterState before governed query path selection.

@@ -98,6 +98,27 @@ repo_root/
 
 The app resolves `db_path` relative to repo root. No environment variables are required; optional overrides: `DUCKDB_PATH`, `DUCKDB_SCHEMA`.
 
+### 3.3 Parquet backend (localhost/cloud parity)
+
+For **identical KPI values** on localhost and Streamlit Cloud, use the parquet backend on both:
+
+- **Environment variable (required for parity):** Set `APP_DATA_BACKEND=parquet` in Streamlit Cloud app settings (and locally if you want parity).
+- **Required committed files (repo root–relative):**
+  - `data/agg/manifest.json` (already committed)
+  - `data/curated/metrics_monthly.meta.json` (already committed)
+  - `data/agg/firm_monthly.parquet`, `channel_monthly.parquet`, `ticker_monthly.parquet`, `geo_monthly.parquet`, `segment_monthly.parquet` (production data; see §3.3.1 if not yet committed).
+- **Optional debug:** `DEBUG_DATA_PARITY=1` or `SHOW_PARITY_DEBUG=1` to show the "Data parity" expander (path, row count, sums, OGR).
+
+#### 3.3.1 Committing production parquet (if needed)
+
+`.gitignore` excludes `data/agg/*.parquet`. To deploy from GitHub without running ETL in Cloud, commit the agg parquet files once (they are small, &lt; ~500 KB total):
+
+```bash
+git add -f data/agg/firm_monthly.parquet data/agg/channel_monthly.parquet data/agg/ticker_monthly.parquet data/agg/geo_monthly.parquet data/agg/segment_monthly.parquet
+```
+
+Then commit and push. If you prefer not to commit parquet, run ETL in Cloud (e.g. setup script) or use the DuckDB backend (§3.2) and commit `analytics.duckdb` instead.
+
 ---
 
 ## 4. Files moved / organized (pre-deploy cleanup)

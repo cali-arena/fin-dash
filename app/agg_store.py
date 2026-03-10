@@ -24,13 +24,16 @@ MEASURE_COLS = frozenset({
 
 
 def _load_manifest_impl(root: Path, path: str) -> dict[str, Any]:
-    """Internal: read manifest JSON. Tries data/agg/manifest.json then agg/manifest.json."""
+    """Internal: read manifest from single canonical path (no fallbacks for local/cloud parity)."""
     root = Path(root)
-    for candidate in (path, "agg/manifest.json"):
-        full = root / candidate
-        if full.exists():
-            return json.loads(full.read_text(encoding="utf-8"))
-    raise FileNotFoundError(f"Agg manifest not found: {root / path}. Run: python -m pipelines.agg.build_aggs")
+    full = root / path
+    if not full.exists():
+        raise FileNotFoundError(
+            f"Agg manifest not found: {full}. "
+            "Required for parity: commit data/agg/manifest.json and data/agg/*.parquet. "
+            "Run: python -m pipelines.agg.build_aggs or copy manifest and parquet files to data/agg/."
+        )
+    return json.loads(full.read_text(encoding="utf-8"))
 
 
 def load_manifest(root: Path, path: str = MANIFEST_REL) -> dict[str, Any]:

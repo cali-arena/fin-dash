@@ -19,6 +19,7 @@ from app.config.tab1_defaults import (
     TAB1_DEFAULT_PERIOD,
 )
 from app.data_contract import get_data_contract_cached
+from app.data.data_gateway import Q_FIRM_MONTHLY, run_query as gateway_run_query
 from app.pages.dynamic_report import render as render_dynamic_report
 from app.pages.nlq_chat import render as render_nlq_chat
 from app.pages.visualisations import render as render_visualisations
@@ -80,7 +81,44 @@ def _parity_debug_enabled() -> bool:
         or st.session_state.get("dev_mode")
         or os.environ.get("DEV_MODE") == "1"
         or os.environ.get("SHOW_PARITY_DEBUG") == "1"
+        or os.environ.get("DEBUG_DATA_PARITY") == "1"
     )
+
+
+def _render_data_parity_debug(app_root: Path, data_contract) -> None:
+    """Temporary debug block for localhost vs cloud parity: path, exists, row count, dates, NNB/NNF/market sums, scope sample."""
+    import pandas as pd
+    with st.expander("Data parity (DEBUG_DATA_PARITY / SHOW_PARITY_DEBUG)", expanded=False):
+        resolved = data_contract.resolved_path
+        path_exists = Path(resolved).exists() if resolved else False
+        st.text(f"Resolved path: {resolved}")
+        st.text(f"File exists: {path_exists}")
+        st.text(f"Backend: {data_contract.backend}")
+        st.text(f"Dataset version (cache key): {data_contract.dataset_version}")
+        try:
+            df = gateway_run_query(Q_FIRM_MONTHLY, {}, root=app_root)
+            if df is not None and isinstance(df, pd.DataFrame):
+                st.text(f"Firm monthly rows (unfiltered): {len(df)}")
+                if "month_end" in df.columns:
+                    me = pd.to_datetime(df["month_end"], errors="coerce").dropna()
+                    if not me.empty:
+                        st.text(f"Month range: {me.min()} to {me.max()}")
+                for col, label in (("nnb", "Sum NNB"), ("nnf", "Sum NNF"), ("end_aum", "Sum End AUM")):
+                    if col in df.columns:
+                        s = pd.to_numeric(df[col], errors="coerce").sum()
+                        st.text(f"{label}: {s:,.2f}")
+                for col in ("market_impact", "market_impact_rate", "market_pnl"):
+                    if col in df.columns:
+                        s = pd.to_numeric(df[col], errors="coerce").sum()
+                        st.text(f"Sum {col}: {s:,.2f}")
+                if "ogr" in df.columns:
+                    last_ogr = pd.to_numeric(df["ogr"], errors="coerce").dropna()
+                    if not last_ogr.empty:
+                        st.text(f"OGR (last row): {last_ogr.iloc[-1]:.4f}")
+            else:
+                st.caption("Firm query returned no DataFrame.")
+        except Exception as e:
+            st.exception(e)
 
 
 def main() -> None:
@@ -116,6 +154,7 @@ def main() -> None:
     st.session_state["dataset_fingerprint"] = data_contract.fingerprint
     st.session_state["dataset_path"] = data_contract.resolved_path
     st.session_state["dataset_backend"] = data_contract.backend
+    st.session_state["app_root"] = str(ROOT)
 
     if st.session_state.get(DATASET_FINGERPRINT_CHANGED_KEY):
         st.warning(
@@ -140,6 +179,7 @@ def main() -> None:
             st.text(f"Active scope: {active_scope}")
             st.text(f"Active period mode: {active_period}")
             st.caption(f"Backend: {data_contract.backend}")
+        _render_data_parity_debug(ROOT, data_contract)
         _render_state_cache_debug(state, data_contract)
 
     tab_widgets = st.tabs([TAB_LABELS.get(t, t.replace("_", " ").title()) for t in tabs])

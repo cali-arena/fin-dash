@@ -77,10 +77,20 @@ def _resolve_canonical_path_parquet(root: Path) -> str | None:
 def resolve_canonical_dataset_path(root: Path | None = None) -> str:
     """
     Single canonical resolved file path for the raw source dataset.
-    Tries DuckDB from gateway config first, then data/agg/firm_monthly.parquet.
-    Fails loudly (raises FileNotFoundError) if neither is found.
+    When APP_DATA_BACKEND=parquet: only data/agg/firm_monthly.parquet (parity).
+    Otherwise: DuckDB from gateway config first, then data/agg/firm_monthly.parquet.
+    Fails loudly (raises FileNotFoundError) if not found.
     """
     root = Path(root) if root is not None else Path.cwd()
+    if (os.environ.get("APP_DATA_BACKEND", "").strip().lower() == "parquet"):
+        path = _resolve_canonical_path_parquet(root)
+        if path:
+            return path
+        raise FileNotFoundError(
+            f"Parquet dataset required but missing: {root / CONTRACT_PARQUET_REL}. "
+            "Set APP_DATA_BACKEND=parquet only when data/agg/firm_monthly.parquet is committed. "
+            "Run ETL or copy firm_monthly.parquet to data/agg/."
+        )
     path = _resolve_canonical_path_duckdb(root)
     if path:
         return path
