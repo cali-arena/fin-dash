@@ -55,7 +55,7 @@ def _call_claude(model: str, api_key: str, system: str, user_content: str, max_t
     try:
         from anthropic import Anthropic
     except ImportError:
-        raise LLMError("Anthropic SDK not installed. Add 'anthropic' to requirements.")
+        raise LLMError("Anthropic package is not installed in this deployment.")
     client = Anthropic(api_key=api_key)
     msg = client.messages.create(
         model=model,
@@ -75,7 +75,7 @@ def _call_openai(model: str, api_key: str, system: str, user_content: str, max_t
     try:
         from openai import OpenAI
     except ImportError:
-        raise LLMError("OpenAI SDK not installed. Add 'openai' to requirements.")
+        raise LLMError("OpenAI package is not installed in this deployment.")
     client = OpenAI(api_key=api_key)
     resp = client.chat.completions.create(
         model=model,

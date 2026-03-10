@@ -1,7 +1,10 @@
 """
 LLM / Claude configuration. API key from environment or Streamlit secrets.
-Intelligence Desk does not use this; it uses UI session-state only (app.services.llm_client).
-This module must never raise at import or when get_anthropic_api_key() is called.
+
+CLOUD BOOT: Do not import this module from main.py or from page modules loaded at startup.
+Intelligence Desk uses app.services.llm_client only (UI session-state key). This module
+is used only by app.llm.claude/claude_client, which are lazy-loaded via app.llm.__getattr__.
+get_anthropic_api_key() must never raise (wrapped in try/except).
 """
 from __future__ import annotations
 

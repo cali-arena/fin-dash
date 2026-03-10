@@ -30,9 +30,10 @@ from app.ui.exports import render_export_buttons
 from app.ui.guardrails import fallback_note, render_chart_or_fallback, render_empty_state
 from app.ui.theme import apply_enterprise_plotly_style, safe_render_plotly
 
+# LLM client: optional; must not crash app if missing or broken (cloud-safe)
 try:
     from app.services.llm_client import LLMError, generate_data_narrative, generate_market_intelligence
-except ImportError:
+except Exception:
     generate_market_intelligence = None  # type: ignore[assignment]
     generate_data_narrative = None  # type: ignore[assignment]
     LLMError = Exception  # type: ignore[misc, assignment]
@@ -690,7 +691,16 @@ def _inject_nlq_page_css() -> None:
 
 
 def render(state: FilterState, contract: dict[str, Any]) -> None:
-    """Intelligence Desk: minimal institutional UI — mode, presets, input, single response area."""
+    """Intelligence Desk: mode, presets, input, single response area. Never crashes app."""
+    try:
+        _render_intelligence_desk(state, contract)
+    except Exception as e:
+        st.error("Intelligence Desk encountered an error. Other tabs are unaffected.")
+        st.exception(e)
+
+
+def _render_intelligence_desk(state: FilterState, contract: dict[str, Any]) -> None:
+    """Intelligence Desk UI implementation."""
     _ = contract
     _inject_nlq_page_css()
 

@@ -12,6 +12,7 @@ if str(_root) not in sys.path:
 
 import streamlit as st
 
+# All app imports below: any failure is caught so Cloud shows real error instead of "Oh no."
 try:
     from app.config.contract import ensure_contract_checked, load_ui_contract
     from app.config.tab1_defaults import (
