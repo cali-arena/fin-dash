@@ -647,7 +647,7 @@ def get_config(root: Path | None = None) -> dict[str, Any]:
             "policy_hash": "",
             "created_at": "",
         }
-    # 1) views manifest
+    # 1) views manifest (primary for Streamlit Cloud: analytics/duckdb_views_manifest.json)
     views_path = root / VIEWS_MANIFEST_REL
     if views_path.exists():
         try:
@@ -655,13 +655,23 @@ def get_config(root: Path | None = None) -> dict[str, Any]:
             db_path_rel = (data.get("db_path") or "").strip()
             schema = (data.get("schema") or "analytics").strip()
             if db_path_rel:
+                resolved_db = (root / db_path_rel).resolve()
+                db_path_str = str(resolved_db)
+                if not resolved_db.exists():
+                    raise FileNotFoundError(
+                        f"DuckDB file not found: {db_path_str}. "
+                        "For Streamlit Cloud (DuckDB backend), place analytics.duckdb at repository root. "
+                        f"Manifest: {VIEWS_MANIFEST_REL}"
+                    )
                 return {
-                    "db_path": str((root / db_path_rel).resolve()),
+                    "db_path": db_path_str,
                     "schema": schema,
                     "dataset_version": (data.get("dataset_version") or "unknown").strip(),
                     "policy_hash": (data.get("policy_hash") or "").strip(),
                     "created_at": (data.get("created_at") or "").strip(),
                 }
+        except FileNotFoundError:
+            raise
         except Exception:
             pass
     # 2) duckdb manifest

@@ -75,6 +75,29 @@ FINANCE_DASH/
   - `DUCKDB_SCHEMA` – optional; default `data`.
 - **Special notes:** Ensure `data/` and/or a prebuilt `analytics.duckdb` are available (e.g. committed sample or ETL run). The app uses relative paths from repo root.
 
+### 3.2 DuckDB backend (recommended for Streamlit Cloud)
+
+To run the dashboard in the cloud using the **DuckDB single-file data backend**, the repository must contain these files (all paths relative to repo root):
+
+```
+repo_root/
+├── analytics.duckdb                    # ≈ 4 MB — primary data source
+├── analytics/
+│   └── duckdb_views_manifest.json     # < 1 KB — schema, db_path, dataset_version
+├── data/
+│   └── curated/
+│       └── metrics_monthly.meta.json   # < 1 KB — dataset_version fallback
+├── app/
+│   └── main.py
+└── requirements.txt
+```
+
+- **analytics.duckdb** — Built by ETL (e.g. `etl/build_duckdb.py` or rebuild_analytics). Place at **repository root**. `.gitignore` allows this file via `!analytics.duckdb` so it can be committed (or use Git LFS for large files).
+- **analytics/duckdb_views_manifest.json** — Must contain `db_path` (e.g. `"analytics.duckdb"`), `schema` (e.g. `"data"`), and optionally `dataset_version`, `reads_views_only: true`. The data gateway loads config from this first; the DB file must exist or the app raises a clear error.
+- **data/curated/metrics_monthly.meta.json** — Used when dataset version is not read from the DuckDB `meta.dataset_version` table; must include `dataset_version`.
+
+The app resolves `db_path` relative to repo root. No environment variables are required; optional overrides: `DUCKDB_PATH`, `DUCKDB_SCHEMA`.
+
 ---
 
 ## 4. Files moved / organized (pre-deploy cleanup)
@@ -149,3 +172,14 @@ All are used at runtime: Streamlit, Pandas, Pydantic (config/contracts), PyYAML 
 | **Memory** | DuckDB and Pandas load data in memory; large datasets may hit Cloud memory limits. |
 | **Secrets** | Use Streamlit Cloud Secrets for API keys; never commit `.env`. |
 | **Python version** | Streamlit Cloud uses a supported Python (e.g. 3.10+); match in `pyproject.toml` and runtime. |
+
+---
+
+## 9. Cloud/local parity verification
+
+To confirm localhost and Streamlit Cloud produce identical results for the same dataset and defaults:
+
+1. **Enable parity debug in Cloud:** Set environment variable `SHOW_PARITY_DEBUG=1` in Streamlit Cloud app settings (or use the in-app observability toggle if enabled). This reveals the "Debug / Data Contract" expander with environment, dataset path, version, fingerprint, row count, date range, totals, active scope, and active period mode.
+2. **Use the same dataset:** Deploy with the same `data/` and/or `analytics.duckdb` (or same DATA_VERSION and data files) as local.
+3. **First-load test:** In both environments, open the app in a fresh session (no prior session history), leave default filters and period (YTD, all dimensions "All"), and compare the values in **docs/PARITY_VALIDATION.md** checklist.
+4. **Pass criteria:** Dataset fingerprint, row count, date range, total AUM/NNB/NNF, active scope ("Firm-wide"), active period mode ("YTD"), and the five top KPIs (End AUM, NNB, NNF, Organic Growth, Market Movement) must match. If any differ, treat as FAIL and investigate before considering parity resolved.

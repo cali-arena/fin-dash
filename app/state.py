@@ -2,7 +2,7 @@
 Single state model for all tabs. FilterState + DrillState + stable hashing.
 All pages must read/write filters only via get_filter_state / set_filter_state / update_filter_state.
 Drill state: read via get_drill_state; write only via update_drill_state (or set_drill_state).
-No other module should mutate st.session_state[DRILL_STATE_KEY] directly—this is the single writer path.
+No other module should mutate st.session_state[DRILL_STATE_KEY] directly - this is the single writer path.
 """
 from __future__ import annotations
 
@@ -19,6 +19,19 @@ try:
 except ImportError:
     st = None
 
+__all__ = [
+    "FilterState",
+    "DrillState",
+    "get_filter_state",
+    "set_filter_state",
+    "update_filter_state",
+    "get_drill_state",
+    "update_drill_state",
+    "ensure_tab1_defaults_initialized",
+    "resolve_best_default_filters",
+    "get_dataset_date_bounds",
+]
+
 SESSION_KEY = "filter_state"
 
 # Enum allowed values (from filters.yml)
@@ -31,7 +44,7 @@ DEFAULT_CURRENCY = "native"
 DEFAULT_UNIT = "units"
 DEFAULT_DRILL_PATH = ["channel", "geo", "product"]
 
-# Drill state: single source of truth for drill-down selection (ranked table → selectbox → details)
+# Drill state: single source of truth for drill-down selection (ranked table -> selectbox -> details)
 DrillMode = Literal["channel", "ticker"]
 SelectionSource = Literal["table", "widget", "url", "chart"]
 DetailsLevel = Literal["firm", "selected"]
@@ -408,6 +421,22 @@ def revalidate_drill_on_filter_change(
     return get_drill_state()
 
 
+def ensure_tab1_defaults_initialized() -> None:
+    """
+    Initialize Tab 1 session state from governed defaults exactly once per session.
+    Ensures first-load behavior is deterministic in local and Streamlit Cloud.
+    Call from main after render_global_filters(); no-op if already inited.
+    """
+    if st is None:
+        return
+    from app.config.tab1_defaults import TAB1_INIT_DONE_KEY, get_tab1_governed_defaults
+    if st.session_state.get(TAB1_INIT_DONE_KEY):
+        return
+    for key, value in get_tab1_governed_defaults().items():
+        st.session_state[key] = value
+    st.session_state[TAB1_INIT_DONE_KEY] = True
+
+
 def _default_date_end() -> str:
     """Last day of current month (month_end boundary)."""
     today = date.today()
@@ -637,7 +666,7 @@ def _candidate_date_windows(month_ends: list[str]) -> list[tuple[str, str]]:
 def _state_has_rows(state: FilterState, root: Path) -> bool:
     """True when the state produces rows in at least one core startup dataset."""
     try:
-        from app.data_gateway import (
+        from app.data.data_gateway import (
             get_channel_breakdown,
             get_firm_snapshot,
             get_growth_quality,
@@ -668,7 +697,7 @@ def get_dataset_date_bounds(root: str | Path | None = None) -> tuple[date | None
     """
     root_path = Path(root) if root is not None else Path(__file__).resolve().parents[1]
     try:
-        from app.data_gateway import DataGateway
+        from app.data.data_gateway import DataGateway
 
         gw = DataGateway(root_path)
         month_ends = _parse_month_end_values(gw.list_month_ends(None, view_name="v_firm_monthly", limit=None))
@@ -695,7 +724,7 @@ def resolve_best_default_filters(root: str | Path | None = None) -> FilterState:
     base = FilterState.from_dict({})
     root_path = Path(root) if root is not None else Path(__file__).resolve().parents[1]
     try:
-        from app.data_gateway import DataGateway
+        from app.data.data_gateway import DataGateway
 
         gw = DataGateway(root_path)
         month_ends = _parse_month_end_values(gw.list_month_ends(base, view_name="v_firm_monthly", limit=None))
