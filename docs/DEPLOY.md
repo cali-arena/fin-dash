@@ -111,13 +111,13 @@ For **identical KPI values** on localhost and Streamlit Cloud, use the parquet b
 
 #### 3.3.1 Committing production parquet (if needed)
 
-`.gitignore` excludes `data/agg/*.parquet`. To deploy from GitHub without running ETL in Cloud, commit the agg parquet files once (they are small, &lt; ~500 KB total):
+The repo uses `.gitignore` exceptions for the five production parquet files, so they are tracked by default. If they are not yet committed, add and commit once (they are small, &lt; ~500 KB total):
 
 ```bash
-git add -f data/agg/firm_monthly.parquet data/agg/channel_monthly.parquet data/agg/ticker_monthly.parquet data/agg/geo_monthly.parquet data/agg/segment_monthly.parquet
+git add data/agg/firm_monthly.parquet data/agg/channel_monthly.parquet data/agg/ticker_monthly.parquet data/agg/geo_monthly.parquet data/agg/segment_monthly.parquet
 ```
 
-Then commit and push. If you prefer not to commit parquet, run ETL in Cloud (e.g. setup script) or use the DuckDB backend (§3.2) and commit `analytics.duckdb` instead.
+(If your `.gitignore` does not have exceptions for these files, use `git add -f` before the paths.) Then commit and push. If you prefer not to commit parquet, run ETL in Cloud (e.g. setup script) or use the DuckDB backend (§3.2) and commit `analytics.duckdb` instead.
 
 ---
 

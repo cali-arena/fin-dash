@@ -1,7 +1,7 @@
 {
   "db_path": "analytics.duckdb",
   "schema": "data",
-  "dataset_version": "864ccbcf8a57",
+  "dataset_version": "535f664f6206",
   "created_at": "2026-03-06T19:39:35Z",
   "reads_views_only": true
 }

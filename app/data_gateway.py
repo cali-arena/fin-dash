@@ -639,16 +639,6 @@ def get_config(root: Path | None = None) -> dict[str, Any]:
             "policy_hash": "",
             "created_at": "",
         }
-    # Local rebuilt analytics database fallback (used when manifest files are locked/stale).
-    rebuilt_db = root / "analytics_fixed.duckdb"
-    if rebuilt_db.exists():
-        return {
-            "db_path": str(rebuilt_db.resolve()),
-            "schema": "data",
-            "dataset_version": "unknown",
-            "policy_hash": "",
-            "created_at": "",
-        }
     # 1) views manifest (primary for Streamlit Cloud: analytics/duckdb_views_manifest.json)
     views_path = root / VIEWS_MANIFEST_REL
     if views_path.exists():
