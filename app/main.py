@@ -147,8 +147,21 @@ def main() -> None:
     ensure_tab1_defaults_initialized()
     state = get_filter_state()
 
-    # Single canonical data contract: resolves path, version, fingerprint; fails loudly if dataset missing
-    data_contract = get_data_contract_cached(ROOT)
+    # Single canonical data contract: resolves path, version, fingerprint
+    try:
+        data_contract = get_data_contract_cached(ROOT)
+    except FileNotFoundError as e:
+        st.error("Dataset not found — app cannot load data.")
+        st.code(str(e), language="text")
+        st.caption(
+            "On Streamlit Cloud: ensure data/agg/firm_monthly.parquet (or analytics.duckdb) is in the repo, "
+            "or set APP_DATA_BACKEND and add the required file. See docs/DEPLOY.md."
+        )
+        return
+    except Exception as e:
+        st.error("App failed to load data contract.")
+        st.exception(e)
+        return
     _invalidate_cache_if_fingerprint_changed(data_contract.fingerprint)
     st.session_state["dataset_version"] = data_contract.dataset_version
     st.session_state["dataset_fingerprint"] = data_contract.fingerprint
@@ -193,4 +206,16 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as e:
+        import traceback
+        st.set_page_config(page_title="Finance Dashboard", layout="wide")
+        st.error("Error running app.")
+        st.exception(e)
+        with st.expander("Traceback", expanded=True):
+            st.code(traceback.format_exc(), language="text")
+        st.caption(
+            "Common causes: missing data (data/agg/firm_monthly.parquet or analytics.duckdb), "
+            "or missing env. Check Streamlit Cloud logs for details."
+        )
