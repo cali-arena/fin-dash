@@ -23,6 +23,7 @@ FORBIDDEN_PATTERNS = [
 ]
 
 # Gateway infra + optional debug page. Extend for approved loaders (e.g. data_loader) as needed.
+# app/guardrails.py defines deny patterns (strings); it does not use DuckDB/parquet.
 ALLOWLIST = [
     "app/data_gateway.py",
     "app/agg_store.py",
@@ -30,6 +31,7 @@ ALLOWLIST = [
     "app/data_loader.py",
     "app/data.py",
     "app/drill_paths.py",
+    "app/guardrails.py",
     "app/pages/Debug_Data.py",
     "app/pages/debug_adhoc.py",
 ]

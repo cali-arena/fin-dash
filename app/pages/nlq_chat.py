@@ -247,36 +247,44 @@ def render(state: FilterState, contract: dict[str, Any]) -> None:
     """Tab 3: two modes - Data Questions (deterministic query + Claude narrative) or Market Intelligence (external + Claude)."""
     st.title("Intelligence Desk")
     st.markdown(
-        "<div class='section-subtitle'>Choose a mode: <strong>Data Questions</strong> (internal, governed) or <strong>Market Intelligence</strong> (external sources).</div>",
+        "<div class='section-frame'>"
+        "<strong>Two ways to ask:</strong> "
+        "<strong>Data Questions</strong> = your internal data, governed query, verified result. "
+        "<strong>Market Intelligence</strong> = external sources (rates, macro), answer clearly labeled as external."
+        "</div>",
         unsafe_allow_html=True,
     )
+    st.markdown("**Choose mode**")
     mode = st.radio(
         "Mode",
         ["Data Questions", "Market Intelligence"],
         key="nlq_mode",
         horizontal=True,
         format_func=lambda x: x,
+        label_visibility="collapsed",
     )
     is_data_mode = mode == "Data Questions"
     mode_label = "Data Questions"
-    mode_desc = "Your question is classified and executed as a governed query over internal data. Results are verified; narrative is generated from facts only."
+    mode_desc = "Governed query over your internal data. Results are verified; narrative is generated from facts only."
+    mode_short = "Internal data · verified numbers · optional narrative"
     if not is_data_mode:
         mode_label = "Market Intelligence"
-        mode_desc = "Your question is answered using external sources (e.g. rates, macro). The answer is clearly labeled as external and not from your internal data."
+        mode_desc = "Answer uses external sources (e.g. rates, macro). Clearly labeled as external — not from your internal data."
+        mode_short = "External sources · answer labeled as Market Intelligence"
     st.markdown(
         f"<div class='nlq-mode-badge'>"
-        f"<div class='nlq-mode-label'>Current mode</div>"
-        f"<strong>{mode_label}</strong> — {mode_desc}"
+        f"<div class='nlq-mode-label'>Current mode: {mode_label}</div>"
+        f"{mode_short}"
         f"</div>",
         unsafe_allow_html=True,
     )
     st.markdown("---")
     st.subheader("Ask your question" if is_data_mode else "Ask a market intelligence question")
     if is_data_mode:
-        st.caption("Internal data only. We parse your question, run a deterministic query, then show verified results and an optional narrative.")
+        st.caption("We parse your question, run a governed query on internal data, then show verified results and an optional narrative.")
         placeholder = "e.g., Show net new business by channel over the last 12 months"
     else:
-        st.caption("External context. Answers are labeled as Market Intelligence and may use a placeholder if external search is not yet configured.")
+        st.caption("Answers use external sources and are labeled as Market Intelligence. Placeholder may appear if external search is not configured.")
         placeholder = "e.g., What are current Fed rate expectations?"
     _render_prompt_presets(is_data_mode)
     with st.expander("Example prompts", expanded=False):
@@ -354,8 +362,13 @@ def render(state: FilterState, contract: dict[str, Any]) -> None:
         return
 
     qs = spec_or_error
-    st.info(INTERNAL_DATA_LABEL)
-    st.caption("Parsed parameters and governed query execution produce the verified result below; narrative is generated from these facts only.")
+    st.markdown(
+        "<div class='section-frame'>"
+        "<strong>Internal data answer</strong> — This result is from a governed query over your internal dataset. Numbers are verified; narrative is generated from these facts only."
+        "</div>",
+        unsafe_allow_html=True,
+    )
+    st.subheader("Internal data answer")
     validation_logs: list[str] = []
     try:
         validate_queryspec(qs, metric_reg, dim_reg, out_logs=validation_logs)

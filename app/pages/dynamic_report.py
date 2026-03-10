@@ -175,7 +175,7 @@ def _executive_chart(ts: pd.DataFrame) -> bool:
     if len(work) < 2 or not has_meaningful_variation(work["end_aum"]):
         return False
     fig = go.Figure()
-    fig.add_trace(go.Scatter(x=work["month_end"], y=work["end_aum"], mode="lines+markers", name="End AUM", line=dict(color=PALETTE["primary"], width=2.4)))
+    fig.add_trace(go.Scatter(x=work["month_end"], y=work["end_aum"], mode="lines+markers", name="End AUM (report slice)", line=dict(color=PALETTE["primary"], width=2.4)))
     market_col = "market_impact_abs" if "market_impact_abs" in work.columns else ("market_impact" if "market_impact" in work.columns else None)
     if market_col is not None and has_meaningful_variation(work[market_col]):
         work[market_col] = pd.to_numeric(work[market_col], errors="coerce")
@@ -185,7 +185,7 @@ def _executive_chart(ts: pd.DataFrame) -> bool:
         work["nnb"] = pd.to_numeric(work["nnb"], errors="coerce")
         fig.add_trace(go.Bar(x=work["month_end"], y=work["nnb"], name="NNB", marker=dict(color=PALETTE["secondary"], opacity=0.35), yaxis="y2"))
         fig.update_layout(yaxis2=dict(title="NNB", overlaying="y", side="right", showgrid=False))
-    fig.update_layout(title="AUM trend with flow context", xaxis_title="Month", yaxis_title="End AUM", height=320, margin=dict(l=8, r=8, t=42, b=8))
+    fig.update_layout(title="AUM trend (report slice)", xaxis_title="Month", yaxis_title="End AUM (report slice)", height=320, margin=dict(l=8, r=8, t=42, b=8))
     apply_enterprise_plotly_style(fig, height=320)
     st.plotly_chart(fig, use_container_width=True, key="tab2_exec_ts")
     return True
@@ -244,7 +244,7 @@ def render(state: FilterState, contract: dict[str, Any]) -> None:
     h1.caption(f"Reporting window: {filters.date_start} to {filters.date_end}")
     h2.caption(f"Active filter context: {filters.slice_dim + ': ' + filters.slice_value if filters.slice_dim and filters.slice_value else 'Enterprise-wide portfolio'}")
     h3.caption(f"Data refresh timestamp: {updated}")
-    st.markdown("<div class='section-subtitle'>Deterministic portfolio commentary with supporting evidence and reconciliation controls.</div>", unsafe_allow_html=True)
+    st.markdown("<div class='section-subtitle'>Portfolio commentary and evidence to support decisions. All narrative and metrics are from your data; export sections as needed.</div>", unsafe_allow_html=True)
 
     with st.spinner("Loading investment commentary..."):
         pack = _get_gateway().get_report_pack(filters)
@@ -281,15 +281,15 @@ def render(state: FilterState, contract: dict[str, Any]) -> None:
     suppressed: list[str] = []
 
     st.markdown("#### Executive Overview")
-    st.markdown("<div class='section-subtitle'>Growth direction, quality of growth, and market contribution context.</div>", unsafe_allow_html=True)
+    st.markdown("<div class='section-subtitle'>Growth direction, revenue quality, and market contribution.</div>", unsafe_allow_html=True)
     report_scope = (filters.slice_dim + ": " + filters.slice_value) if (filters.slice_dim and filters.slice_value) else "Firm-wide portfolio"
     c1, c2, c3, c4, c5 = st.columns(5)
-    c1.metric("End AUM (report scope)", fmt_currency(snap.get("end_aum"), unit="auto", decimals=2))
+    c1.metric("End AUM (report slice)", fmt_currency(snap.get("end_aum"), unit="auto", decimals=2))
     c2.metric("MoM Growth", fmt_percent(snap.get("mom_pct"), decimals=2, signed=True))
     c3.metric("YTD Growth", fmt_percent(snap.get("ytd_pct"), decimals=2, signed=True))
     c4.metric("Net New Business", fmt_currency(snap.get("nnb"), unit="auto", decimals=2))
     c5.metric("Market Impact", fmt_currency(snap.get("market_impact_abs"), unit="auto", decimals=2))
-    st.caption(f"Report scope: **{report_scope}**. All metrics above are snapshot month-end for this scope.")
+    st.caption(f"Report slice: **{report_scope}**. All values = selected slice only (not enterprise AUM unless slice is Firm-wide).")
     overview_list = _normalize_bullets(overview.bullets, 8)
     if overview_list and len(overview_list[0]) > 120:
         st.markdown(overview_list[0])
@@ -302,7 +302,7 @@ def render(state: FilterState, contract: dict[str, Any]) -> None:
         _note("Executive chart suppressed because time-series signal is insufficient.")
 
     st.markdown("#### Distribution / Channel Analysis")
-    st.markdown("<div class='section-subtitle'>Channel concentration, leadership, and allocation shift diagnostics.</div>", unsafe_allow_html=True)
+    st.markdown("<div class='section-subtitle'>What this shows: channel concentration, leadership, and mix shift. Why it matters: see where flow and AUM are coming from and where to reallocate.</div>", unsafe_allow_html=True)
     for b in _normalize_bullets(channel.bullets, 6):
         st.markdown(f"- {b}")
     if not _ranked_bar(channel_df, "Channel contributors by net new business", "tab2_channel", ["nnb", "aum_end", "value"]):
@@ -314,7 +314,7 @@ def render(state: FilterState, contract: dict[str, Any]) -> None:
         _note("Channel mix lacks enough variation for a secondary mix-shift view.", "Signal Note")
 
     st.markdown("#### Product & ETF Analysis")
-    st.markdown("<div class='section-subtitle'>Product-level flow quality, concentration, and ETF contribution patterns.</div>", unsafe_allow_html=True)
+    st.markdown("<div class='section-subtitle'>What this shows: product-level flow quality, concentration, and ETF contribution. Why it matters: spot leaders, laggards, and concentration risk.</div>", unsafe_allow_html=True)
     for b in _normalize_bullets(product.bullets, 6):
         st.markdown(f"- {b}")
     if not _ranked_bar(product_df, "Product leaders and laggards", "tab2_product", ["nnb", "aum_end", "value"]):
@@ -323,7 +323,7 @@ def render(state: FilterState, contract: dict[str, Any]) -> None:
         _note("Product allocation shifts are limited under the selected slice.", "Signal Note")
 
     st.markdown("#### Geographic Analysis")
-    st.markdown("<div class='section-subtitle'>Regional contribution and mix-shift evidence for portfolio growth.</div>", unsafe_allow_html=True)
+    st.markdown("<div class='section-subtitle'>What this shows: regional contribution and mix shift. Why it matters: see which geographies are driving or lagging.</div>", unsafe_allow_html=True)
     for b in _normalize_bullets(geo.bullets, 6):
         st.markdown(f"- {b}")
     geo_label = _label_col(geo_df) or ""
@@ -334,7 +334,7 @@ def render(state: FilterState, contract: dict[str, Any]) -> None:
         _note("Geographic view is concentrated in a single market, so no comparative chart is shown.", "Concentration")
 
     st.markdown("#### Anomalies and Flags")
-    st.markdown("<div class='section-subtitle'>Rule-based abnormal pattern detection for portfolio risk review.</div>", unsafe_allow_html=True)
+    st.markdown("<div class='section-subtitle'>What this shows: outliers and patterns that may need attention. Why it matters: focus review on items that deviate from baseline.</div>", unsafe_allow_html=True)
     for b in _normalize_bullets(anomalies.bullets, 6):
         st.markdown(f"- {b}")
     if anomalies_df is not None and not anomalies_df.empty:
@@ -342,7 +342,7 @@ def render(state: FilterState, contract: dict[str, Any]) -> None:
             _note("Anomaly chart suppressed because the signal has fewer than two meaningful points.")
 
     st.markdown("#### Recommendations")
-    st.markdown("<div class='section-subtitle'>Deterministic next actions based on anomalies, concentration, and mix-shift signals.</div>", unsafe_allow_html=True)
+    st.markdown("<div class='section-subtitle'>What this shows: suggested next actions from anomalies, concentration, and mix shift. Why it matters: prioritize where to act.</div>", unsafe_allow_html=True)
     actions = _normalize_bullets(recs.bullets, 6)
     for b in actions:
         st.markdown(f"- {b}")

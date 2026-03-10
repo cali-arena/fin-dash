@@ -135,7 +135,7 @@ def _build_hero_narrative_paragraph(context: dict[str, Any], scope: str) -> str:
     market_rate = _coerce_num(latest.get("market_impact_rate"))
 
     parts: list[str] = []
-    parts.append(f"Portfolio ending AUM for **{scope}** stood at {_fmt_currency(end_aum)} as of {current_me}.")
+    parts.append(f"End AUM (selected slice) for **{scope}** stood at {_fmt_currency(end_aum)} as of {current_me}.")
     if nnb == nnb:
         direction = "expansion" if nnb >= 0 else "contraction"
         parts.append(f" Net new business contributed {_fmt_currency(nnb)} ({direction}).")
@@ -199,7 +199,7 @@ class NarrativeWordingService:
         direction = "positive" if facts.nnb >= 0 else "negative"
         market_tone = "supportive" if facts.market_impact_rate >= 0 else "detractive"
         return (
-            f"As of {facts.month_end}, ending AUM (selected scope) is {_fmt_currency(facts.end_aum)}. "
+            f"As of {facts.month_end}, End AUM (selected slice) is {_fmt_currency(facts.end_aum)}. "
             f"Net new business remained {direction} at {_fmt_currency(facts.nnb)}, "
             f"with organic growth of {_fmt_pct(facts.ogr)} and {market_tone} market movement of {_fmt_pct(facts.market_impact_rate)}."
         )
@@ -430,27 +430,27 @@ def _render_core_metrics(monthly: pd.DataFrame, firm_monthly: pd.DataFrame | Non
 
     scope = _aum_scope_label()
     k1, k2, k3, k4, k5 = st.columns(5)
-    k1.metric("End AUM (selected scope)", _fmt_currency(end_aum))
+    k1.metric("End AUM (selected slice)", _fmt_currency(end_aum))
     k2.metric("Net New Business", _fmt_currency(nnb))
     k3.metric("Net New Flow", _fmt_currency(nnf))
     k4.metric("Organic Growth", _fmt_pct(latest.get("ogr")))
     k5.metric("Market Movement", _fmt_currency(market))
 
-    st.caption(f"Scope: **{scope}**. All KPIs above are latest month-end for this scope.")
+    st.caption(f"Scope: **{scope}**. All values above are for the selected slice only — not enterprise (firm-wide) AUM unless scope is Firm-wide.")
     if firm_monthly is not None and not firm_monthly.empty and "end_aum" in firm_monthly.columns:
         firm_latest = firm_monthly.sort_values("month_end").iloc[-1]
         firm_end_aum = float(firm_latest.get("end_aum", float("nan")))
         if pd.notna(firm_end_aum) and pd.notna(end_aum) and firm_end_aum != 0:
             scope_share = end_aum / firm_end_aum
             st.caption(
-                f"Enterprise reference: firm-wide End AUM is {_fmt_currency(firm_end_aum)}; "
-                f"selected scope represents {_fmt_pct(scope_share)}."
+                f"**Enterprise AUM (firm-wide):** {_fmt_currency(firm_end_aum)}. "
+                f"**Selected slice = {_fmt_pct(scope_share)} of enterprise AUM.**"
             )
     if pd.notna(recon_diff):
         if abs(float(recon_diff)) < 1e-6:
-            st.caption("AUM consistency check: reconciled (Begin AUM + NNB + Market Movement = End AUM).")
+            st.caption("Selected-slice AUM consistency: Begin AUM + NNB + Market = End AUM (reconciled).")
         else:
-            st.caption(f"AUM consistency check: variance detected ({_fmt_currency(recon_diff)}).")
+            st.caption(f"Selected-slice AUM consistency: variance {_fmt_currency(recon_diff)}.")
 
 
 def _build_driver_cards(
@@ -558,7 +558,7 @@ def _render_narrative_and_drivers(
 ) -> None:
     _section_header(
         "Portfolio Snapshot",
-        "Executive narrative and key commercial drivers for the selected period.",
+        "What this shows: executive summary and key drivers for your selected scope. Why it matters: quick read on growth, market contribution, and where to focus.",
     )
     if monthly.empty:
         st.info("No portfolio data is available for the selected filter set.")
@@ -597,7 +597,7 @@ def _render_narrative_and_drivers(
 
 
 def _render_aum_waterfall(monthly: pd.DataFrame) -> None:
-    _section_header("1) AUM Waterfall", "Opening AUM bridge into flow, market movement, and ending AUM.")
+    _section_header("1) AUM Waterfall", "What this shows: how opening AUM moved to closing AUM via flows and market. Why it matters: confirms reconciliation and shows the bridge for your selected slice.")
     if go is None or monthly.empty:
         _institutional_note("AUM Waterfall", "The selected slice does not provide enough data points for a reconciled AUM bridge.")
         return
@@ -608,7 +608,7 @@ def _render_aum_waterfall(monthly: pd.DataFrame) -> None:
     end_aum = float(latest.get("end_aum", 0.0))
     fig = go.Figure(
         go.Waterfall(
-            x=["Begin AUM", "NNB", "Market Impact", "End AUM"],
+            x=["Begin AUM (slice)", "NNB", "Market Impact", "End AUM (slice)"],
             y=[begin_aum, nnb, market, end_aum],
             measure=["absolute", "relative", "relative", "total"],
             increasing={"marker": {"color": PALETTE["positive"]}},
@@ -622,13 +622,13 @@ def _render_aum_waterfall(monthly: pd.DataFrame) -> None:
     apply_enterprise_plotly_style(fig, height=330)
     safe_render_plotly(fig)
     scope = _aum_scope_label()
-    st.caption(f"Scope: **{scope}**. Bridge from opening to ending AUM for the selected scope.")
+    st.caption(f"Scope: **{scope}**. All amounts above are selected-slice AUM only. Not enterprise AUM unless scope is Firm-wide.")
 
 
 def _render_channel_breakdown(channel_scoped: pd.DataFrame) -> None:
     _section_header(
         "2) Distribution Channel Breakdown (NNB + NNF)",
-        "Side-by-side channel contribution to growth and net fee-bearing flow proxy.",
+        "What this shows: NNB and NNF by channel (bars or treemap), with optional drill to sub-channels. Why it matters: see where flow is concentrated and where to focus distribution.",
     )
     if go is None or channel_scoped.empty:
         _institutional_note("Distribution View", "Channel flow evidence is insufficient for comparative NNB and NNF analysis.")
@@ -638,11 +638,15 @@ def _render_channel_breakdown(channel_scoped: pd.DataFrame) -> None:
     if by_channel.empty or by_channel["channel"].nunique() < 2:
         _institutional_note("Distribution View", "Flow contribution is concentrated in a single channel under the current slice.")
         return
+
+    st.markdown("**Step 1 — Chart type:** Choose how to view channels (grouped bars or treemap).")
     view_mode = st.radio(
-        "Channel view",
+        "View channels as",
         ["Grouped bars", "Treemap"],
         horizontal=True,
         key="tab1_channel_breakdown_view",
+        help="Grouped bars: side-by-side NNB and NNF per channel. Treemap: size = magnitude, color = sign.",
+        label_visibility="collapsed",
     )
 
     if view_mode == "Treemap":
@@ -710,13 +714,16 @@ def _render_channel_breakdown(channel_scoped: pd.DataFrame) -> None:
 
     if "sub_channel" in channel_scoped.columns:
         ch_opts = by_channel["channel"].astype(str).tolist()
+        st.markdown("---")
+        st.markdown("**Step 2 — Drill to sub-channel (optional):** Select a channel to see NNB and NNF by sub-channel.")
         drill_channel = st.selectbox(
-            "Drill to sub-channel",
-            options=["All channels"] + ch_opts,
+            "Select a channel to drill into sub-channel detail",
+            options=["— View channels only (no drill) —"] + ch_opts,
             index=0,
             key="tab1_channel_drill",
+            help="Choosing a channel shows a second chart below with that channel's sub-channels.",
         )
-        if drill_channel != "All channels":
+        if drill_channel and drill_channel != "— View channels only (no drill) —":
             sub = channel_scoped[channel_scoped["channel"].astype(str) == str(drill_channel)].copy()
             by_sub = sub.groupby("sub_channel", as_index=False).agg(nnb=("nnb", "sum"), nnf=("nnf", "sum"))
             by_sub = by_sub.sort_values("nnb", ascending=False).head(12)
@@ -742,18 +749,22 @@ def _render_channel_breakdown(channel_scoped: pd.DataFrame) -> None:
                     barmode="group",
                     height=320,
                     margin=dict(l=20, r=20, t=35, b=40),
-                    title=f"Sub-channel drill-down: {drill_channel}",
+                    title=f"Sub-channel detail: {drill_channel}",
                     xaxis_title="Sub-channel",
                 )
                 apply_enterprise_plotly_style(sub_fig, height=320)
                 safe_render_plotly(sub_fig)
-    st.caption("Compare NNB and NNF by channel, then drill into sub-channels for concentration and mix diagnostics.")
+        else:
+            st.caption("Select a channel above to see its sub-channel breakdown here.")
+        st.caption("All data is for the selected scope. Use the dropdown to drill from any channel into its sub-channels.")
+    else:
+        st.caption("All data is for the selected scope. Sub-channel drill is not available for this slice.")
 
 
 def _render_growth_quality_matrix(ticker_scoped: pd.DataFrame, monthly: pd.DataFrame) -> None:
     _section_header(
         "3) Growth Quality Matrix",
-        "Products are positioned by growth contribution and fee-yield quality. Bubble size represents product scale and color indicates market contribution.",
+        "What this shows: products by growth contribution (x) and fee-yield quality (y); size = scale, color = market contribution. Why it matters: spot star performers, pricing issues, and underutilised opportunities.",
     )
     if go is None or ticker_scoped.empty:
         _institutional_note("Growth Quality Matrix", "Product-level flow and pricing evidence is insufficient for quadrant analysis.")
@@ -821,7 +832,7 @@ def _render_growth_quality_matrix(ticker_scoped: pd.DataFrame, monthly: pd.DataF
 
     scope = _aum_scope_label()
     k1, k2, k3, k4, k5, k6 = st.columns(6)
-    k1.metric("Total AUM (matrix universe)", _fmt_currency(total_aum))
+    k1.metric("Matrix universe AUM", _fmt_currency(total_aum))
     k2.metric("Net New Business", _fmt_currency(total_nnb))
     k3.metric("Organic Growth Rate", _fmt_pct(ogr_total))
     k4.metric("Fee Yield", _fmt_fee_yield(fee_total))
@@ -857,18 +868,19 @@ def _render_growth_quality_matrix(ticker_scoped: pd.DataFrame, monthly: pd.DataF
         f"<div class='section-frame'><strong>Product needing attention</strong><br>{needs_attention['product_ticker']} sits in {needs_attention['quadrant_label']} and is flagged for {needs_attention['strategic_action'].lower()}.</div>",
         unsafe_allow_html=True,
     )
+    st.caption("Matrix universe AUM = sum of product AUM in this chart. Not the same as selected-slice End AUM or enterprise AUM.")
     scope_end = float("nan")
     if monthly is not None and not monthly.empty and "end_aum" in monthly.columns:
         scope_end = float(monthly.sort_values("month_end").iloc[-1].get("end_aum", float("nan")))
     if pd.notna(scope_end) and scope_end != 0:
         coverage = total_aum / scope_end
         st.caption(
-            f"Scope: **{scope}**. Matrix-universe AUM is {_fmt_currency(total_aum)} versus scope End AUM {_fmt_currency(scope_end)} "
-            f"({_fmt_pct(coverage)} coverage)."
+            f"Scope: **{scope}**. Matrix universe AUM: {_fmt_currency(total_aum)}. "
+            f"Selected-slice End AUM: {_fmt_currency(scope_end)} (matrix = {_fmt_pct(coverage)} of slice)."
         )
     else:
         st.caption(
-            f"Scope: **{scope}**. Total AUM above is the sum of ending AUM for products shown in the matrix."
+            f"Scope: **{scope}**. Matrix universe AUM above = sum of product End AUM in matrix (selected slice only)."
         )
 
     top_n_labels = 8
@@ -968,7 +980,7 @@ def _render_growth_quality_matrix(ticker_scoped: pd.DataFrame, monthly: pd.DataF
     fig.update_xaxes(tickformat=",.1f", ticksuffix="M", gridcolor="rgba(127,147,188,0.25)")
     fig.update_yaxes(tickformat=".2f", ticksuffix="%", gridcolor="rgba(127,147,188,0.25)")
     safe_render_plotly(fig)
-    st.caption("Labels are intentionally limited to key outliers and priority products; use hover for full product detail.")
+    st.caption("Key products and outliers are labeled; hover for full detail. Quadrants guide where to invest, fix pricing, or review.")
     st.markdown(
         (
             "<div class='availability-note' style='margin-top:0.35rem; margin-bottom:0.7rem; padding:0.7rem 0.85rem;'>"
@@ -1002,7 +1014,7 @@ def _render_growth_quality_matrix(ticker_scoped: pd.DataFrame, monthly: pd.DataF
     action_formats["AUM"] = lambda x: fmt_currency(x, unit="auto", decimals=2)
     action_formats["Fee Yield"] = lambda x: (_fmt_pct(x) if pd.notna(pd.to_numeric(x, errors="coerce")) else "-")
     st.dataframe(format_df(action_table, action_formats), use_container_width=True, hide_index=True)
-    st.caption("Priority action table ranks products by growth, fee-yield quality, and scale for executive decisioning.")
+    st.caption("Ranks products by growth, fee yield, and scale so you can prioritize action by quadrant.")
 
     top_strip = priority.head(3)["product_ticker"].astype(str).tolist()
     if top_strip and "month_end" in ticker_scoped.columns:
@@ -1053,7 +1065,7 @@ def _etf_flag(by_etf: pd.DataFrame) -> pd.Series:
 def _render_etf_drilldown(ticker_scoped: pd.DataFrame) -> None:
     _section_header(
         "4) ETF Drill-Down",
-        "Top 10 ETFs by NNB and by NNF. High NNB + low fee yield = Pricing issue (red); low NNB + high fee yield = Opportunity (green).",
+        "What this shows: top ETFs by NNB and NNF with pricing flags. Why it matters: red = pricing issue (high NNB, low fee yield); green = opportunity (low NNB, high fee yield).",
     )
     if go is None or ticker_scoped.empty:
         _institutional_note("ETF Drill-Down", "ETF-labelled product evidence is unavailable for this slice.")
@@ -1167,7 +1179,7 @@ def _render_etf_drilldown(ticker_scoped: pd.DataFrame) -> None:
     )
     st.dataframe(styled, use_container_width=True, hide_index=True)
     st.caption(
-        f"Scope: **{scope}**. Red Flag = high NNB with low fee yield. Green Flag = low NNB with high fee yield."
+        f"Scope: **{scope}**. Red = pricing issue; green = opportunity. Table and charts use the same flags."
     )
 
 
@@ -1207,7 +1219,7 @@ def _prior_year_series(
     out["_dt"] = pd.to_datetime(out[period_col], errors="coerce")
     full = full.sort_values(period_col).drop_duplicates(subset=[period_col], keep="last")
     full["_dt"] = pd.to_datetime(full[period_col], errors="coerce")
-    prior_key = out["_dt"] - pd.offsets.Month(offset_months)
+    prior_key = out["_dt"] - pd.DateOffset(months=offset_months)
     right = full[["_dt"] + [c for c in value_cols if c in full.columns]].copy()
     right = right.rename(columns={c: f"prior_{c}" for c in value_cols if c in right.columns})
     right = right.rename(columns={"_dt": "_prior_dt"})
@@ -1222,7 +1234,7 @@ def _prior_year_series(
 def _render_trend_analysis(monthly: pd.DataFrame, monthly_full: pd.DataFrame | None = None) -> None:
     _section_header(
         "5) Trend Analysis",
-        "OGR and Market Impact Rate over time with volatility band and prior-year comparison.",
+        "What this shows: organic growth rate and market impact rate over time, with a volatility band and prior-year comparison. Why it matters: track momentum and compare to last year.",
     )
     if go is None or monthly.empty:
         _institutional_note("Trend Analysis", "Time-series coverage is insufficient for trend diagnostics.")
@@ -1333,13 +1345,13 @@ def _render_trend_analysis(monthly: pd.DataFrame, monthly_full: pd.DataFrame | N
     )
     apply_enterprise_plotly_style(fig, height=420)
     safe_render_plotly(fig)
-    st.caption(f"Scope: **{scope}**. Volatility band: OGR rolling ±1 std. Prior-year lines show same period last year.")
+    st.caption(f"Scope: **{scope}**. Band = OGR volatility; dashed lines = same period last year.")
 
 
 def _render_correlation(monthly: pd.DataFrame, channel_scoped: pd.DataFrame) -> None:
     _section_header(
         "6) Driver Contribution Analysis",
-        "Relative impact of key portfolio drivers on growth and performance.",
+        "What this shows: relative influence of NNB, flows, OGR, market, and fee yield. Why it matters: see which drivers are moving the needle so you can focus action.",
     )
     if go is None or monthly.empty:
         _institutional_note("Driver Contribution Analysis", "The selected slice does not include enough observations for driver diagnostics.")
@@ -1420,7 +1432,7 @@ def _render_correlation(monthly: pd.DataFrame, channel_scoped: pd.DataFrame) -> 
         apply_enterprise_plotly_style(fig, height=340)
         fig.update_xaxes(range=[0, max(100.0, float(df["contribution_pct"].max()) * 1.25)])
         safe_render_plotly(fig)
-        st.caption("Driver ranking is normalized from observed metric influence over the selected period.")
+        st.caption("Ranking reflects each driver’s relative influence over the selected period.")
 
     with right:
         top = df["driver"].iloc[0] if len(df) > 0 else "-"
@@ -1433,19 +1445,9 @@ def _render_correlation(monthly: pd.DataFrame, channel_scoped: pd.DataFrame) -> 
         st.markdown(f"**Supporting factor**  \n{third}")
         st.markdown(f"**Moderate influence**  \n{fourth}")
 
-    st.markdown(
-        (
-            "<div class='availability-note'>"
-            "<strong>Legend:</strong> "
-            "X axis = growth/performance contribution score, "
-            "Y axis = portfolio drivers, "
-            "bar length = relative influence in the selected period."
-            "</div>"
-        ),
-        unsafe_allow_html=True,
-    )
+    st.caption("Bar length = relative influence of each driver in the period.")
 
-    st.markdown("#### Correlation Diagnostic (supporting view)")
+    st.markdown("#### Channel correlation (supporting)")
     corr_cols = ["nnb_channel", "fee_yield_channel", "aum_growth"]
     corr_ready = pd.DataFrame(columns=corr_cols)
     if channel_scoped is not None and not channel_scoped.empty:
@@ -1529,7 +1531,7 @@ def _render_correlation(monthly: pd.DataFrame, channel_scoped: pd.DataFrame) -> 
 def _render_top_bottom_table(ticker_scoped: pd.DataFrame) -> None:
     _section_header(
         "7) Top and Bottom Contributors",
-        "Sortable, filterable table with CSV export. Example: filter by Channel (e.g. Broker Dealer) and NNB above a threshold.",
+        "What this shows: product-level NNB, NNF, and AUM with filters by channel, country, and thresholds. Why it matters: identify top and bottom contributors and export for action; CSV reflects current view.",
     )
     if ticker_scoped.empty:
         _institutional_note("Contributors Table", "Product-level contribution evidence is unavailable for the selected filters.")
@@ -1642,7 +1644,7 @@ def render(state: FilterState, contract: dict[str, Any]) -> None:
 
     st.markdown("## Institutional Asset Management Dashboard")
     st.markdown(
-        "<div class='section-subtitle'>Portfolio growth, distribution quality, ETF concentration, and contributor diagnostics in one executive view.</div>",
+        "<div class='section-subtitle'>One view of portfolio growth, distribution quality, ETF focus, and top contributors. Use filters below to scope by period and dimension.</div>",
         unsafe_allow_html=True,
     )
 
@@ -1660,7 +1662,7 @@ def render(state: FilterState, contract: dict[str, Any]) -> None:
     if period_default not in PERIOD_OPTIONS:
         period_default = "YTD"
 
-    st.markdown("### Filters")
+    st.markdown("### Scope & filters")
     period = st.radio("Time Period", PERIOD_OPTIONS, horizontal=True, index=PERIOD_OPTIONS.index(period_default), key="tab1_period")
     firm_period = _apply_period(firm_df, period)
     channel_period = _apply_period(channel_df, period)

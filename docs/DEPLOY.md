@@ -65,6 +65,16 @@ FINANCE_DASH/
 | **Secrets** | Use Streamlit Cloud secrets if needed; do not commit `.env` (in .gitignore) |
 | **Data at runtime** | Either run ETL in Cloud (e.g. in a setup script) or mount/provide `data/`, `analytics.duckdb` |
 
+### 3.1 Streamlit Cloud setup (what to configure)
+
+- **Main file path:** `app/main.py` (run from repository root).
+- **Python version:** 3.10 or 3.11 (set in Streamlit Cloud app settings if needed).
+- **Secrets / environment variables (optional):**
+  - `ANTHROPIC_API_KEY` – required for NLQ/Intelligence Desk (Claude). Set in *Secrets* or *Environment variables*. If unset, the tab shows a safe message and does not crash.
+  - `DUCKDB_PATH` – optional; override path to DuckDB file (e.g. `analytics.duckdb`).
+  - `DUCKDB_SCHEMA` – optional; default `data`.
+- **Special notes:** Ensure `data/` and/or a prebuilt `analytics.duckdb` are available (e.g. committed sample or ETL run). The app uses relative paths from repo root.
+
 ---
 
 ## 4. Files moved / organized (pre-deploy cleanup)

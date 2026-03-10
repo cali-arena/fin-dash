@@ -58,43 +58,42 @@ def _is_empty_like(obj: Any) -> bool:
 # --- Executive Overview: Are we growing? Is growth good? Where from? What changed? ---
 
 EXEC_PARAGRAPH_OPENING = (
-    "This period summarizes portfolio growth, revenue quality, and driver mix for the selected coverage. "
-    "The commentary addresses growth direction, sustainability of economics, source of performance, and change versus the prior period."
+    "This report summarizes growth, revenue quality, and driver mix for the selected coverage."
 )
 
 EXEC_GROWTH_TEMPLATES = {
-    "growth_strong_flows_tailwind": "Portfolio growth is strong, supported by both client flows and favourable market movement.",
-    "growth_strong_flows_headwind": "Growth remains solid despite market headwinds, with client flows carrying the period.",
-    "growth_weak_flows_tailwind": "Performance is primarily market-led while organic flows remain limited; durability depends on flow improvement.",
-    "growth_weak_flows_headwind": "Growth conditions are weak, with soft flows and adverse market contribution weighing on results.",
-    "growth_modest": "Growth is present but moderate, with neither flows nor market contribution showing decisive momentum.",
-    "growth_unknown": "Growth direction cannot be confirmed from the selected data window.",
+    "growth_strong_flows_tailwind": "Portfolio growth is strong, with both client flows and favourable market movement in support.",
+    "growth_strong_flows_headwind": "Growth holds up despite market headwinds; client flows carry the period.",
+    "growth_weak_flows_tailwind": "Performance is largely market-led; organic flows remain limited and durability will depend on flow improvement.",
+    "growth_weak_flows_headwind": "Growth is weak amid soft flows and adverse market contribution.",
+    "growth_modest": "Growth is moderate, with no decisive momentum yet from either flows or market.",
+    "growth_unknown": "Growth direction is not determinable from the selected window.",
 }
 
 EXEC_QUALITY_TEMPLATES = {
-    "quality_high_nnb_low_fee_yield": "Growth quality is constructive: strong flows are paired with disciplined fee-yield outcomes.",
-    "quality_high_nnb_high_fee_yield": "Growth is profitable; fee yield is elevated—review pricing and mix to ensure sustainability.",
-    "quality_low_nnb": "Organic momentum is limited; improving retention and net sales should be a near-term priority.",
-    "quality_fee_improving": "Fee yield has improved versus the prior period, supporting better revenue quality.",
-    "quality_fee_deteriorating": "Fee yield has softened versus the prior period; pricing and mix should be reassessed.",
-    "quality_fee_stable": "Fee yield is broadly stable versus the prior period.",
-    "quality_unknown": "Revenue quality cannot be reliably assessed from current inputs.",
+    "quality_high_nnb_low_fee_yield": "Growth quality is constructive: strong flows with disciplined fee-yield outcomes.",
+    "quality_high_nnb_high_fee_yield": "Growth is profitable; fee yield is elevated—review pricing and mix for sustainability.",
+    "quality_low_nnb": "Organic momentum is limited; retention and net sales are the near-term priority.",
+    "quality_fee_improving": "Fee yield improved period-over-period, supporting revenue quality.",
+    "quality_fee_deteriorating": "Fee yield softened period-over-period; reassess pricing and mix.",
+    "quality_fee_stable": "Fee yield is stable period-over-period.",
+    "quality_unknown": "Revenue quality is not assessable from current inputs.",
 }
 
 EXEC_SOURCE_TEMPLATES = {
-    "source_nnb_dominant": "Client flow was the principal driver of AUM change in the period.",
-    "source_market_dominant": "Market movement was the principal driver of AUM change in the period.",
-    "source_mixed": "AUM progression reflects a balanced contribution from flows and market movement.",
-    "source_unknown": "The source mix of AUM change is not fully observable in this cut of data.",
+    "source_nnb_dominant": "Client flow drove AUM change in the period.",
+    "source_market_dominant": "Market movement drove AUM change in the period.",
+    "source_mixed": "AUM progression reflects a balanced contribution from flows and market.",
+    "source_unknown": "Driver mix of AUM change is not fully observable in this cut.",
 }
 
 EXEC_WHAT_CHANGED_TEMPLATES = {
-    "changed_strong_flow_mkt_down": "Versus the prior period, flow momentum strengthened while market contribution turned negative, shifting the mix toward client activity.",
-    "changed_weak_flow_mkt_up": "Versus the prior period, market contribution improved while flows remained soft, indicating a more market-led profile.",
-    "changed_both_positive": "Versus the prior period, both flows and market contribution improved in tandem.",
-    "changed_both_negative": "Versus the prior period, both flows and market contribution weakened, creating a more challenging backdrop.",
-    "changed_modest": "Versus the prior period, the driver mix remains broadly stable with moderate movement in both factors.",
-    "changed_unknown": "Period-over-period comparison is not available for the selected window.",
+    "changed_strong_flow_mkt_down": "Period-over-period, flow momentum strengthened while market contribution turned negative; mix shifted toward client activity.",
+    "changed_weak_flow_mkt_up": "Period-over-period, market contribution improved while flows stayed soft—profile more market-led.",
+    "changed_both_positive": "Period-over-period, both flows and market contribution improved.",
+    "changed_both_negative": "Period-over-period, flows and market contribution weakened; backdrop more challenging.",
+    "changed_modest": "Driver mix is broadly stable period-over-period, with moderate movement in both factors.",
+    "changed_unknown": "Period-over-period comparison is not available for this window.",
 }
 
 
@@ -120,9 +119,8 @@ def select_executive_overview(snap: dict[str, Any], fmt_money: Any, fmt_pct: Any
 
     # Headline: AUM, MoM, YTD, NNB, OGR
     bullets.append(
-        f"As of {month_end}, month-end AUM is {fmt_money(end_aum)}; "
-        f"MoM change is {fmt_pct(mom_pct)} and YTD change is {fmt_pct(ytd_pct)}. "
-        f"Net new business is {fmt_money(nnb)} with organic growth at {fmt_pct(ogr)}."
+        f"As at {month_end}, AUM stands at {fmt_money(end_aum)}; MoM {fmt_pct(mom_pct)}, YTD {fmt_pct(ytd_pct)}. "
+        f"Net new business {fmt_money(nnb)}; organic growth {fmt_pct(ogr)}."
     )
 
     # Are we growing? (directional)
@@ -157,13 +155,13 @@ def select_executive_overview(snap: dict[str, Any], fmt_money: Any, fmt_pct: Any
 
     # Flows vs market (driver detail)
     if not _is_na(ogr) and not _is_na(mkt_rate):
-        bullets.append(f"Organic growth rate {fmt_pct(ogr)}; market impact rate {fmt_pct(mkt_rate)}.")
+        bullets.append(f"OGR {fmt_pct(ogr)}; market impact rate {fmt_pct(mkt_rate)}.")
     if not _is_na(mkt_abs):
-        bullets.append(f"Market contribution (absolute): {fmt_money(mkt_abs)}.")
+        bullets.append(f"Absolute market contribution: {fmt_money(mkt_abs)}.")
 
     # Is growth good? (fee yield, quality) — support fee yield delta when available
     if not _is_na(fee_yield):
-        bullets.append(f"Fee yield: {fmt_pct(fee_yield)}.")
+        bullets.append(f"Fee yield {fmt_pct(fee_yield)}.")
         if not _is_na(fee_yield_prior) and fee_yield_prior != 0:
             delta = fee_yield - fee_yield_prior
             if delta > FEE_YIELD_IMPROVING_THRESHOLD:
@@ -200,11 +198,11 @@ def select_executive_overview(snap: dict[str, Any], fmt_money: Any, fmt_pct: Any
 # --- Channel: share gain/loss, concentration ------------------------------------
 
 CHANNEL_TEMPLATES = {
-    "top_bottom": "Top channel by NNB: {top_name} ({top_value}). Bottom channel by NNB: {bottom_name} ({bottom_value}).",
-    "share_gain": "Distribution mix rotated toward {name}, gaining {delta} of AUM share versus the prior period.",
-    "share_loss": "Distribution mix rotated away from {name}, which lost {delta} of AUM share versus the prior period.",
-    "concentration_high": "Channel concentration is elevated; the largest distribution channel accounts for {share} of total AUM.",
-    "concentration_modest": "Channel mix remains reasonably diversified across distribution groups.",
+    "top_bottom": "Top channel by NNB: {top_name} ({top_value}). Bottom: {bottom_name} ({bottom_value}).",
+    "share_gain": "Distribution mix rotated toward {name}, gaining {delta} AUM share period-over-period.",
+    "share_loss": "Mix rotated away from {name}, which lost {delta} AUM share period-over-period.",
+    "concentration_high": "Channel concentration is elevated; the largest channel accounts for {share} of AUM.",
+    "concentration_modest": "Channel mix is reasonably diversified across distribution groups.",
     "no_data": "No channel rank data available for the selected slice.",
 }
 
@@ -256,10 +254,10 @@ def select_channel_commentary(bullets_from_rules: list[str], rank: Any, snap: di
 # --- Product and ETF: concentration, mix shift ---------------------------------
 
 PRODUCT_TEMPLATES = {
-    "concentration_high": "Product concentration is elevated: the leading product or strategy represents {share} of net new business.",
-    "concentration_modest": "Product inflow is distributed across several products, with concentration risk in a moderate range.",
-    "top_etf": "ETF flows were led by {name} with {value} in net new business.",
-    "mix_shift_product": "Product mix shifted, with {name} gaining {delta} share of flows versus the prior period.",
+    "concentration_high": "Product concentration is elevated: the leading product or strategy represents {share} of NNB.",
+    "concentration_modest": "Product inflow is distributed across several products; concentration is moderate.",
+    "top_etf": "ETF flows were led by {name} ({value} NNB).",
+    "mix_shift_product": "Product mix shifted; {name} gained {delta} share of flows period-over-period.",
     "no_data": "No product rank data available for the selected slice.",
 }
 
@@ -299,9 +297,9 @@ def select_product_commentary(bullets_from_rules: list[str], rank: Any, fmt_mone
 # --- Geographic analysis --------------------------------------------------------
 
 GEO_TEMPLATES = {
-    "share_gain": "Geographic mix shifted toward {name}, gaining {delta} of AUM share versus the prior period.",
-    "share_loss": "Geographic mix shifted away from {name}, losing {delta} of AUM share versus the prior period.",
-    "concentration_high": "Geographic concentration is elevated; the largest region represents {share} of total AUM.",
+    "share_gain": "Geographic mix shifted toward {name}, gaining {delta} AUM share period-over-period.",
+    "share_loss": "Geographic mix shifted away from {name}, losing {delta} AUM share period-over-period.",
+    "concentration_high": "Geographic concentration is elevated; the largest region represents {share} of AUM.",
     "no_data": "Geographic coverage is insufficient for comparative analysis in the selected slice.",
 }
 
@@ -341,11 +339,11 @@ def select_geo_commentary(bullets_from_rules: list[str], rank: Any, fmt_pct: Any
 # --- Anomalies and Flags -------------------------------------------------------
 
 ANOMALY_TEMPLATES = {
-    "none": "No statistically significant anomalies were flagged under current thresholds; no immediate intervention is indicated.",
-    "count": "{n} items were flagged for review under the configured statistical thresholds.",
-    "high_severity": "High-priority flag: {metric} at {entity} diverged materially from baseline (current value {value}); immediate driver review is advised.",
-    "medium_severity": "Review recommended: {metric} at {entity} showed a meaningful deviation from baseline.",
-    "reversal": "Flow reversal at {entity}: net new business changed sign versus the prior period; confirm underlying client or product drivers.",
+    "none": "No material anomalies were flagged under current thresholds; no immediate action required.",
+    "count": "{n} items flagged for review under the configured thresholds.",
+    "high_severity": "High-priority flag: {metric} at {entity} diverged materially from baseline (current value {value}); driver review recommended.",
+    "medium_severity": "Review suggested: {metric} at {entity} showed a meaningful deviation from baseline.",
+    "reversal": "Flow reversal at {entity}: NNB changed sign period-over-period; confirm underlying client or product drivers.",
 }
 
 
@@ -384,17 +382,17 @@ def select_anomaly_bullets(anom: Any, fmt_num: Any) -> list[str]:
 
 REC_TEMPLATES = {
     "strong_flows_negative_market": "Review hedging posture and risk messaging: strong flows are offset by negative market contribution.",
-    "allocate_sales_channel": "Reallocate distribution focus toward {name}, where channel mix shift is meaningful versus the prior period.",
-    "allocate_sales_product": "Reallocate product or sales focus toward {name}, where product mix shift is meaningful versus the prior period.",
-    "allocate_sales_geo": "Reallocate regional focus toward {name}, where geographic mix shift is meaningful versus the prior period.",
+    "allocate_sales_channel": "Consider shifting distribution focus toward {name}, where channel mix shift is meaningful period-over-period.",
+    "allocate_sales_product": "Consider shifting product or sales focus toward {name}, where product mix shift is meaningful period-over-period.",
+    "allocate_sales_geo": "Consider shifting regional focus toward {name}, where geographic mix shift is meaningful period-over-period.",
     "investigate_ticker": "Review drivers for {entity}: distinguish flow effect from pricing or mix.",
-    "investigate_high_severity": "Review {entity} in light of the high-priority flag and validate sustainability of the current trend.",
-    "investigate_reversal": "Review {entity} following the flow reversal and confirm the underlying demand shift.",
-    "weak_flows_retention": "Organic growth is limited; prioritize flow generation and client retention initiatives.",
+    "investigate_high_severity": "Review {entity} in light of the high-priority flag; validate sustainability of the trend.",
+    "investigate_reversal": "Review {entity} following the flow reversal; confirm the underlying demand shift.",
+    "weak_flows_retention": "Organic growth is limited; prioritize flow generation and client retention.",
     "fee_deteriorating": "Fee yield has deteriorated; review pricing, mix, and cost levers to protect revenue quality.",
     "concentration_diversify": "Concentration is elevated; diversify across channels or products to reduce single-point dependency.",
     "monitor_modest": "AUM growth is moderate; monitor breadth across channels and products for early signs of acceleration or stress.",
-    "no_actions": "No specific actions are triggered under current anomaly or mix-shift thresholds; continue standard monitoring.",
+    "no_actions": "No specific actions indicated under current thresholds; maintain standard monitoring.",
 }
 
 
