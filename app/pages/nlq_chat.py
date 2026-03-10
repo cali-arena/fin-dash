@@ -31,12 +31,16 @@ from app.ui.guardrails import fallback_note, render_chart_or_fallback, render_em
 from app.ui.theme import apply_enterprise_plotly_style, safe_render_plotly
 
 try:
-    from app.llm.claude import claude_market_intelligence, claude_narrative_from_payload
+    from app.llm.claude import claude_narrative_from_payload
 except ImportError:
-    def claude_market_intelligence(_q: str, _c: str) -> str:
-        return ""
     def claude_narrative_from_payload(_payload: dict[str, Any]) -> str:
         return ""
+
+try:
+    from app.services.llm_client import LLMError, generate_market_intelligence
+except ImportError:
+    generate_market_intelligence = None  # type: ignore[assignment]
+    LLMError = Exception  # type: ignore[misc, assignment]
 
 ROOT = Path(__file__).resolve().parents[2]
 KNOWN_ETF_TICKERS = frozenset({"AGG", "HYG", "TIP", "MUB", "MBB", "IUSB", "SUB"})
@@ -493,6 +497,14 @@ PLACEHOLDER_MARKET = "What is the latest outlook for ETF inflows across major as
 
 NLQ_RESPONSE_KEY = "nlq_response"
 
+# LLM settings: session state only; never persist key to disk
+LLM_PROVIDER_KEY = "nlq_llm_provider"
+LLM_MODEL_KEY = "nlq_llm_model"
+LLM_API_KEY_KEY = "nlq_llm_api_key"
+
+CLAUDE_MODELS = ["claude-3-5-sonnet-latest", "claude-3-7-sonnet-latest"]
+OPENAI_MODELS = ["gpt-4.1-mini", "gpt-4.1"]
+
 
 def _render_prompt_presets(is_data_mode: bool) -> None:
     """Four presets in a 2x2 grid with compact visual weight."""
@@ -534,8 +546,15 @@ def _set_nlq_response(
     full_export_provider: Callable[[], pd.DataFrame] | None = None,
     error: str | None = None,
     placeholder_fallback: str | None = None,
+    provider_meta: str | None = None,
+    response_meta: str | None = None,
 ) -> None:
     """Store one response for the unified response area. Table/chart rendered from table_df and chart_result."""
+    if response_meta is None:
+        if intent == "market_intelligence":
+            response_meta = "Response type: Market Intelligence (External)"
+        elif intent == "data_question":
+            response_meta = "Response type: Internal Data (Verified Python query)"
     st.session_state[NLQ_RESPONSE_KEY] = {
         "intent": intent,
         "header": header,
@@ -546,6 +565,8 @@ def _set_nlq_response(
         "full_export_provider": full_export_provider,
         "error": error,
         "placeholder_fallback": placeholder_fallback,
+        "provider_meta": provider_meta,
+        "response_meta": response_meta,
     }
 
 
@@ -569,6 +590,9 @@ def _render_response_area(state: FilterState, contract: dict[str, Any]) -> None:
     st.markdown(f"<p class='nlq-response-header'><strong>{header}</strong></p>", unsafe_allow_html=True)
     if subtitle:
         st.caption(subtitle)
+    response_meta = (resp.get("response_meta") or "").strip()
+    if response_meta:
+        st.markdown(f"<div class='nlq-response-meta'>{response_meta}</div>", unsafe_allow_html=True)
 
     error = resp.get("error")
     if error:
@@ -582,6 +606,9 @@ def _render_response_area(state: FilterState, contract: dict[str, Any]) -> None:
     narrative = (resp.get("narrative") or "").strip()
     if narrative:
         st.markdown(narrative)
+    provider_meta = resp.get("provider_meta")
+    if provider_meta:
+        st.caption(f"_{provider_meta}_")
 
     chart_result = resp.get("chart_result")
     if chart_result is not None:
@@ -636,6 +663,7 @@ def _inject_nlq_page_css() -> None:
         /* Response area: compact, close to input */
         .nlq-divider { height: 1px; background: #2a3d67; margin: 0.35rem 0 0.5rem 0 !important; }
         .nlq-response-header { font-size: 1.1rem !important; margin-bottom: 0.15rem !important; margin-top: 0.25rem !important; }
+        .nlq-response-meta { color: #9fb0d3; font-size: 0.78rem; margin: -0.1rem 0 0.35rem 0; }
         .nlq-empty-state { border: 1px solid #2a3d67; border-radius: 8px; padding: 0.5rem 0.65rem; background: rgba(17,29,58,0.5); font-size: 0.88rem; color: #b7c5e3; margin: 0.25rem 0 0.4rem 0; }
         .nlq-empty-state .nlq-empty-title { color: #f8fbff; font-weight: 600; font-size: 0.9rem; margin-bottom: 0.15rem; }
         /* Tighten widget spacing for this page */
@@ -685,6 +713,65 @@ def render(state: FilterState, contract: dict[str, Any]) -> None:
         )
     is_data_mode = mode == "Data Questions"
 
+    # --- 3b. LLM settings (session state only; key never persisted to disk) ---
+    if LLM_PROVIDER_KEY not in st.session_state:
+        st.session_state[LLM_PROVIDER_KEY] = "Claude (Anthropic)"
+    if LLM_MODEL_KEY not in st.session_state:
+        st.session_state[LLM_MODEL_KEY] = "claude-3-5-sonnet-latest"
+    if LLM_API_KEY_KEY not in st.session_state:
+        st.session_state[LLM_API_KEY_KEY] = ""
+
+    with st.expander("LLM settings (for Market Intelligence)", expanded=False):
+        _provider_default_idx = 1 if st.session_state.get(LLM_PROVIDER_KEY) == "OpenAI" else 0
+        provider_ui = st.radio(
+            "Provider",
+            ["Claude (Anthropic)", "OpenAI"],
+            key="nlq_llm_provider_ui",
+            horizontal=True,
+            index=_provider_default_idx,
+        )
+        api_key_ui = st.text_input(
+            "API key (optional to replace current key)",
+            key="nlq_llm_api_key_input",
+            type="password",
+            placeholder="Enter your API key (not stored on disk)",
+            label_visibility="visible",
+        )
+        has_saved_key = bool((st.session_state.get(LLM_API_KEY_KEY) or "").strip())
+        st.caption(f"Credential status: {'Configured in session' if has_saved_key else 'Not configured'}")
+        saved_model = st.session_state.get(LLM_MODEL_KEY) or ""
+        if provider_ui == "Claude (Anthropic)":
+            model_list = CLAUDE_MODELS
+            model_index = model_list.index(saved_model) if saved_model in model_list else 0
+            model_ui = st.selectbox(
+                "Model",
+                model_list,
+                key="nlq_llm_model_claude",
+                index=model_index,
+            )
+        else:
+            model_list = OPENAI_MODELS
+            model_index = model_list.index(saved_model) if saved_model in model_list else 0
+            model_ui = st.selectbox(
+                "Model",
+                model_list,
+                key="nlq_llm_model_openai",
+                index=model_index,
+            )
+        if st.button("Apply", key="nlq_llm_apply"):
+            st.session_state[LLM_PROVIDER_KEY] = provider_ui
+            st.session_state[LLM_MODEL_KEY] = model_ui
+            typed_key = (api_key_ui or "").strip()
+            if typed_key:
+                st.session_state[LLM_API_KEY_KEY] = typed_key
+            st.success("Settings applied. Key is stored in session only.")
+            st.rerun()
+
+    active_provider = st.session_state.get(LLM_PROVIDER_KEY) or "Claude (Anthropic)"
+    active_model = st.session_state.get(LLM_MODEL_KEY) or ""
+    active_key = (st.session_state.get(LLM_API_KEY_KEY) or "").strip()
+    market_ready = bool(active_model and active_key and active_key != "your-key-here")
+
     # --- 4. Current mode card (compact) ---
     if is_data_mode:
         st.markdown(
@@ -702,6 +789,12 @@ def render(state: FilterState, contract: dict[str, Any]) -> None:
             "</div>",
             unsafe_allow_html=True,
         )
+
+    if is_data_mode:
+        st.caption("Mode status: Internal deterministic analytics path.")
+    else:
+        readiness = "Ready" if market_ready else "Setup required"
+        st.caption(f"Mode status: {readiness} | Provider: {active_provider} | Model: {active_model or 'Not selected'}")
 
     # --- 5. Active scope line (subtle) ---
     _render_active_scope(state)
@@ -738,7 +831,12 @@ def render(state: FilterState, contract: dict[str, Any]) -> None:
 
     text = (question or "").strip()
     if not text:
-        st.warning("Enter a question.")
+        _set_nlq_response(
+            intent="data_question" if is_data_mode else "market_intelligence",
+            header="Response",
+            subtitle="Question required",
+            error="Enter a question before generating a response.",
+        )
         _render_response_area(state, contract)
         _render_compact_history()
         return
@@ -752,26 +850,74 @@ def render(state: FilterState, contract: dict[str, Any]) -> None:
     else:
         route_to_market = not is_data_mode
 
-    # --- Market Intelligence path: external search + Claude; label answer as external ---
+    # --- Market Intelligence path: UI-configured LLM (Claude or OpenAI); label answer as external ---
     if route_to_market:
-        with st.spinner("Generating response..."):
-            context = search_market_context(text)
-            answer = claude_market_intelligence(text, context)
+        provider = st.session_state.get(LLM_PROVIDER_KEY) or "Claude (Anthropic)"
+        model = st.session_state.get(LLM_MODEL_KEY) or ""
+        api_key = st.session_state.get(LLM_API_KEY_KEY) or ""
 
-        if (answer or "").strip():
+        if not api_key or api_key == "your-key-here" or not model:
+            _set_nlq_response(
+                intent="market_intelligence",
+                header="Market Intelligence - external sources",
+                subtitle="This answer reflects external context, not your internal book.",
+                error=(
+                    "LLM settings are required for Market Intelligence. "
+                    "Open LLM settings, enter a valid API key, select a model, and click Apply."
+                ),
+                response_meta="Response type: Market Intelligence (External)",
+            )
+            _render_response_area(state, contract)
+            _render_compact_history()
+            return
+
+        if generate_market_intelligence is None:
+            _set_nlq_response(
+                intent="market_intelligence",
+                header="Market Intelligence — external sources",
+                subtitle="This answer reflects external context, not your internal book.",
+                error="LLM client is not available. Install app.services.llm_client dependencies.",
+                response_meta="Response type: Market Intelligence (External)",
+            )
+            _render_response_area(state, contract)
+            _render_compact_history()
+            return
+
+        provider_code = "claude" if "Claude" in provider else "openai"
+        context = search_market_context(text)
+
+        try:
+            with st.spinner("Generating response..."):
+                answer, meta_label = generate_market_intelligence(
+                    provider=provider_code,
+                    model=model,
+                    api_key=api_key,
+                    prompt=text,
+                    context=context,
+                )
             _set_nlq_response(
                 intent="market_intelligence",
                 header="Market Intelligence — external sources",
                 subtitle="This answer reflects external context, not your internal book.",
                 narrative=answer,
+                provider_meta=meta_label,
+                response_meta=f"Response type: Market Intelligence (External) | Provider: {provider} | Model: {model}",
             )
-        else:
+        except LLMError as e:
             _set_nlq_response(
                 intent="market_intelligence",
                 header="Market Intelligence — external sources",
                 subtitle="This answer reflects external context, not your internal book.",
-                narrative="",
-                placeholder_fallback="External intelligence is not available. Configure ANTHROPIC_API_KEY and optional search provider to enable it.",
+                error=e.message,
+                response_meta=f"Response type: Market Intelligence (External) | Provider: {provider} | Model: {model}",
+            )
+        except Exception as e:
+            _set_nlq_response(
+                intent="market_intelligence",
+                header="Market Intelligence — external sources",
+                subtitle="This answer reflects external context, not your internal book.",
+                error="An unexpected error occurred. Please try again.",
+                response_meta=f"Response type: Market Intelligence (External) | Provider: {provider} | Model: {model}",
             )
         _render_response_area(state, contract)
         _render_compact_history()
@@ -1062,8 +1208,10 @@ def render(state: FilterState, contract: dict[str, Any]) -> None:
             header="Verified Data Result",
             subtitle="Calculated from your internal filtered dataset.",
             error=f"NLQ query exceeded time budget ({EXECUTOR_TIMEOUT_MS} ms). Try a narrower time range or limit.",
+            response_meta="Response type: Internal Data (Verified Python query)",
         )
         _render_response_area(state, contract)
+        _render_compact_history()
         return
 
     def _full_export_provider() -> pd.DataFrame:
@@ -1107,6 +1255,7 @@ def render(state: FilterState, contract: dict[str, Any]) -> None:
         chart_result=result,
         full_export_provider=_full_export_provider,
         placeholder_fallback=placeholder_fallback,
+        response_meta="Response type: Internal Data (Verified Python query)",
     )
     _render_response_area(state, contract)
     _render_compact_history()

@@ -10,3 +10,4 @@ reportlab
 matplotlib>=3.5
 seaborn>=0.12
 anthropic>=0.39
+openai>=1.0
