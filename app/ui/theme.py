@@ -245,6 +245,53 @@ def inject_global_theme_css() -> None:
             color: #b7c5e3;
             margin-bottom: 0.25rem;
         }
+        /* Reporting period date inputs + filter dropdowns: readable on dark navy */
+        [data-testid="stDateInput"] label,
+        [data-testid="stDateInput"] p {
+            color: #b7c5e3 !important;
+        }
+        [data-testid="stDateInput"] input,
+        [data-testid="stDateInput"] input::placeholder {
+            color: #f8fbff !important;
+            background-color: #111d3a !important;
+            border-color: #2a3d67 !important;
+        }
+        [data-testid="stDateInput"] input::placeholder {
+            opacity: 0.85;
+        }
+        [data-testid="stDateInput"] input:focus {
+            border-color: #4c7edb !important;
+            box-shadow: 0 0 0 1px #4c7edb !important;
+        }
+        [data-testid="stDateInput"] [data-baseweb="input"] {
+            background-color: #111d3a !important;
+            border-color: #2a3d67 !important;
+        }
+        [data-testid="stDateInput"] [data-baseweb="input"] input {
+            color: #f8fbff !important;
+        }
+        [data-testid="stDateInput"] button {
+            background-color: #17284d !important;
+            border-color: #2a3d67 !important;
+            color: #f8fbff !important;
+        }
+        [data-testid="stDateInput"] button:hover {
+            border-color: #4c7edb !important;
+        }
+        /* Selectbox / dropdown selected value on dark background */
+        [data-testid="stSelectbox"] label,
+        [data-testid="stSelectbox"] p {
+            color: #b7c5e3 !important;
+        }
+        [data-testid="stSelectbox"] [data-baseweb="select"] > div,
+        [data-testid="stSelectbox"] [data-baseweb="select"] > div > div {
+            color: #f8fbff !important;
+            background-color: #111d3a !important;
+            border-color: #2a3d67 !important;
+        }
+        [data-testid="stSelectbox"] [aria-expanded="true"] {
+            border-color: #4c7edb !important;
+        }
         </style>
         """,
         unsafe_allow_html=True,

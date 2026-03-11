@@ -7,6 +7,7 @@ Anomalies and Flags, Recommendations. Export: HTML, Markdown, PDF.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import logging
 from pathlib import Path
 import re
 from typing import Any
@@ -20,16 +21,23 @@ except ImportError:
     go = None
 
 from app.data.data_gateway import HEAVY_BUDGET_MS
+from app.config.tab1_defaults import (
+    TAB1_DEFAULT_CHANNEL,
+    TAB1_DEFAULT_COUNTRY,
+    TAB1_DEFAULT_PERIOD,
+    TAB1_DEFAULT_PRODUCT_TICKER,
+    TAB1_DEFAULT_SEGMENT,
+    TAB1_DEFAULT_SUB_CHANNEL,
+    TAB1_DEFAULT_SUB_SEGMENT,
+    get_scope_label_from_state,
+)
+from app.metrics.shared_payload import build_metric_payload
 from app.reporting.html_export import _safe_filename, build_report_html
 from app.reporting.reconciliation import run_reconciliation
 from app.reporting.report_charts import fig_aum_trend_mpl
 from app.reporting.report_engine import (
     SectionOutput,
-    render_anomalies,
-    render_channel_commentary,
-    render_geo_commentary,
     render_overview,
-    render_product_commentary,
     render_recommendations,
 )
 from app.state import FilterState, get_filter_state
@@ -51,6 +59,81 @@ except ImportError:
         pass
 
 ROOT = Path(__file__).resolve().parents[2]
+LOGGER = logging.getLogger(__name__)
+
+
+def _tab1_snapshot_for_parity() -> dict[str, Any]:
+    return {
+        "tab1_period": st.session_state.get("tab1_period", TAB1_DEFAULT_PERIOD),
+        "tab1_filter_channel": st.session_state.get("tab1_filter_channel", TAB1_DEFAULT_CHANNEL),
+        "tab1_filter_sub_channel": st.session_state.get("tab1_filter_sub_channel", TAB1_DEFAULT_SUB_CHANNEL),
+        "tab1_filter_country": st.session_state.get("tab1_filter_country", TAB1_DEFAULT_COUNTRY),
+        "tab1_filter_segment": st.session_state.get("tab1_filter_segment", TAB1_DEFAULT_SEGMENT),
+        "tab1_filter_sub_segment": st.session_state.get("tab1_filter_sub_segment", TAB1_DEFAULT_SUB_SEGMENT),
+        "tab1_filter_ticker": st.session_state.get("tab1_filter_ticker", TAB1_DEFAULT_PRODUCT_TICKER),
+    }
+
+
+def _overview_bullets_from_payload(payload: dict[str, Any], *, period: str) -> list[str]:
+    end_aum = fmt_currency(payload.get("end_aum"), unit="auto", decimals=2)
+    begin_aum = fmt_currency(payload.get("begin_aum"), unit="auto", decimals=2)
+    nnb = fmt_currency(payload.get("nnb"), unit="auto", decimals=2)
+    nnf = fmt_currency(payload.get("nnf"), unit="auto", decimals=2)
+    market = fmt_currency(payload.get("market_pnl"), unit="auto", decimals=2)
+    ogr = fmt_percent(payload.get("ogr"), decimals=2, signed=True)
+    market_rate = fmt_percent(payload.get("market_impact"), decimals=2, signed=True)
+    fee_yield = fmt_percent(payload.get("fee_yield"), decimals=2, signed=True)
+    return [
+        f"{period} snapshot: Selected Scope End AUM {end_aum}, Begin AUM {begin_aum}.",
+        f"Net flows: NNB {nnb}, NNF {nnf}.",
+        f"Growth decomposition: OGR {ogr}, Market Impact {market_rate} ({market}).",
+        f"Fee Yield: {fee_yield}.",
+    ]
+
+
+def _build_dim_rank(df: pd.DataFrame, dim_col: str) -> pd.DataFrame:
+    if df is None or df.empty or dim_col not in df.columns:
+        return pd.DataFrame(columns=[dim_col, "nnb", "nnf", "end_aum", "share"])
+    out = (
+        df.groupby(dim_col, as_index=False)[["nnb", "nnf", "end_aum"]]
+        .sum(min_count=1)
+        .sort_values("nnb", ascending=False)
+        .reset_index(drop=True)
+    )
+    total_aum = float(pd.to_numeric(out["end_aum"], errors="coerce").fillna(0).sum())
+    out["share"] = out["end_aum"] / total_aum if total_aum else float("nan")
+    return out
+
+
+def _section_bullets_from_rank(df: pd.DataFrame, label_col: str, label_name: str) -> list[str]:
+    if df is None or df.empty or label_col not in df.columns:
+        return [f"{label_name} analysis is unavailable for the selected scope."]
+    work = df.copy()
+    work["nnb"] = pd.to_numeric(work.get("nnb"), errors="coerce").fillna(0.0)
+    work["end_aum"] = pd.to_numeric(work.get("end_aum"), errors="coerce").fillna(0.0)
+    leader = work.sort_values(["nnb", label_col], ascending=[False, True]).iloc[0]
+    laggard = work.sort_values(["nnb", label_col], ascending=[True, True]).iloc[0]
+    return [
+        f"Top {label_name.lower()} by NNB: {leader[label_col]} ({fmt_currency(leader['nnb'], unit='auto', decimals=2)}).",
+        f"Weakest {label_name.lower()} by NNB: {laggard[label_col]} ({fmt_currency(laggard['nnb'], unit='auto', decimals=2)}).",
+    ]
+
+
+def _anomaly_bullets_from_shared(anomalies_df: pd.DataFrame) -> list[str]:
+    if anomalies_df is None or anomalies_df.empty:
+        return ["No statistically significant anomalies were flagged in the selected scope and period."]
+    work = anomalies_df.copy()
+    work["zscore"] = pd.to_numeric(work.get("zscore"), errors="coerce")
+    work["value_current"] = pd.to_numeric(work.get("value_current"), errors="coerce")
+    work = work.dropna(subset=["zscore", "value_current"])
+    if work.empty:
+        return ["No statistically significant anomalies were flagged in the selected scope and period."]
+    peak = work.iloc[work["zscore"].abs().idxmax()]
+    direction = "positive" if float(peak["value_current"]) >= 0 else "negative"
+    return [
+        f"Largest flow anomaly occurred in {peak['entity']} with {direction} NNB of {fmt_currency(peak['value_current'], unit='auto', decimals=2)}.",
+        f"Anomaly intensity (|z-score|) peaked at {abs(float(peak['zscore'])):.2f} in the selected period.",
+    ]
 
 
 @st.cache_resource
@@ -93,7 +176,7 @@ def _first_row(df: pd.DataFrame | None) -> dict[str, Any]:
 
 
 def _label_col(df: pd.DataFrame) -> str | None:
-    for c in ["dim_value", "name", "channel", "ticker", "geo", "entity"]:
+    for c in ["dim_value", "name", "channel", "product_ticker", "ticker", "country", "geo", "entity"]:
         if c in df.columns:
             return c
     return None
@@ -179,13 +262,16 @@ def _executive_chart(ts: pd.DataFrame) -> bool:
     market_col = "market_impact_abs" if "market_impact_abs" in work.columns else ("market_impact" if "market_impact" in work.columns else None)
     if market_col is not None and has_meaningful_variation(work[market_col]):
         work[market_col] = pd.to_numeric(work[market_col], errors="coerce")
-        fig.add_trace(go.Scatter(x=work["month_end"], y=work[market_col], mode="lines+markers", name="Market Movement", line=dict(color=PALETTE["market"], width=2.1), yaxis="y2"))
+        market_last = float(work[market_col].dropna().iloc[-1]) if not work[market_col].dropna().empty else 0.0
+        market_color = PALETTE["positive"] if market_last >= 0 else PALETTE["negative"]
+        fig.add_trace(go.Scatter(x=work["month_end"], y=work[market_col], mode="lines+markers", name="Market Movement", line=dict(color=market_color, width=2.1), yaxis="y2"))
         fig.update_layout(yaxis2=dict(title="Market Movement", overlaying="y", side="right", showgrid=False))
     elif "nnb" in work.columns and has_meaningful_variation(work["nnb"]):
         work["nnb"] = pd.to_numeric(work["nnb"], errors="coerce")
-        fig.add_trace(go.Bar(x=work["month_end"], y=work["nnb"], name="NNB", marker=dict(color=PALETTE["secondary"], opacity=0.35), yaxis="y2"))
+        nnb_colors = [PALETTE["positive"] if float(v) >= 0 else PALETTE["negative"] for v in work["nnb"].fillna(0.0)]
+        fig.add_trace(go.Bar(x=work["month_end"], y=work["nnb"], name="NNB", marker=dict(color=nnb_colors, opacity=0.45), yaxis="y2"))
         fig.update_layout(yaxis2=dict(title="NNB", overlaying="y", side="right", showgrid=False))
-    fig.update_layout(title="AUM trend (selected slice)", xaxis_title="Month", yaxis_title="End AUM (selected slice)", height=320, margin=dict(l=8, r=8, t=42, b=8))
+    fig.update_layout(title="AUM trend (selected scope)", xaxis_title="Month", yaxis_title="Selected Scope End AUM", height=320, margin=dict(l=8, r=8, t=42, b=8))
     apply_enterprise_plotly_style(fig, height=320)
     st.plotly_chart(fig, width="stretch", key="tab2_exec_ts")
     return True
@@ -239,15 +325,31 @@ def _export_markdown(meta: dict[str, Any], sections: list[tuple[str, SectionOutp
 def render(state: FilterState, contract: dict[str, Any]) -> None:
     st.subheader("Investment Commentary")
     filters = get_filter_state()
+    tab1 = _tab1_snapshot_for_parity()
+    period = str(tab1.get("tab1_period", TAB1_DEFAULT_PERIOD))
+    scope_label = get_scope_label_from_state(tab1)
     updated = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     h1, h2, h3 = st.columns(3)
     h1.caption(f"Reporting window: {filters.date_start} to {filters.date_end}")
-    h2.caption(f"Portfolio scope: {filters.slice_dim + ': ' + filters.slice_value if filters.slice_dim and filters.slice_value else 'Enterprise-wide portfolio'}")
+    h2.caption(f"Portfolio scope: {scope_label}")
     h3.caption(f"Data refresh timestamp: {updated}")
-    st.markdown("<div class='section-subtitle'>Portfolio commentary and supporting evidence for decisions. Narrative and metrics are deterministic from your internal data.</div>", unsafe_allow_html=True)
+    st.markdown("<div class='section-subtitle'>Portfolio commentary and evidence; narrative from internal data.</div>", unsafe_allow_html=True)
 
     with st.spinner("Loading investment commentary..."):
-        pack = _get_gateway().get_report_pack(filters)
+        gateway = _get_gateway()
+        pack = gateway.get_report_pack(filters)
+        shared_payload = build_metric_payload(
+            gateway=gateway,
+            state=filters,
+            scope_label=scope_label,
+            period=period,
+            channel=tab1.get("tab1_filter_channel", TAB1_DEFAULT_CHANNEL),
+            sub_channel=tab1.get("tab1_filter_sub_channel", TAB1_DEFAULT_SUB_CHANNEL),
+            country=tab1.get("tab1_filter_country", TAB1_DEFAULT_COUNTRY),
+            segment=tab1.get("tab1_filter_segment", TAB1_DEFAULT_SEGMENT),
+            sub_segment=tab1.get("tab1_filter_sub_segment", TAB1_DEFAULT_SUB_SEGMENT),
+            ticker=tab1.get("tab1_filter_ticker", TAB1_DEFAULT_PRODUCT_TICKER),
+        )
     log = st.session_state.get("perf_query_log") or []
     if any(e.get("name") == "get_report_pack" and ("over_budget" in str(e.get("warning") or "")) for e in log[-10:]):
         render_timeout_state("Report generation", HEAVY_BUDGET_MS, "Try a shorter date range.")
@@ -262,50 +364,74 @@ def render(state: FilterState, contract: dict[str, Any]) -> None:
     }
 
     overview = render_overview(pack)
-    channel = render_channel_commentary(pack)
-    product = render_product_commentary(pack)
-    geo = render_geo_commentary(pack)
-    anomalies = render_anomalies(pack)
     recs = render_recommendations(pack)
 
     snap_src = getattr(pack, "firm_snapshot", pd.DataFrame())
-    snap = _first_row(snap_src if isinstance(snap_src, pd.DataFrame) else pd.DataFrame())
-    channel_df = getattr(pack, "channel_rank", pd.DataFrame())
-    product_df = getattr(pack, "ticker_rank", pd.DataFrame())
-    geo_df = getattr(pack, "geo_rank", pd.DataFrame())
-    anomalies_df = getattr(pack, "anomalies", pd.DataFrame())
-    channel_df = channel_df if isinstance(channel_df, pd.DataFrame) else pd.DataFrame()
-    product_df = product_df if isinstance(product_df, pd.DataFrame) else pd.DataFrame()
-    geo_df = geo_df if isinstance(geo_df, pd.DataFrame) else pd.DataFrame()
-    anomalies_df = anomalies_df if isinstance(anomalies_df, pd.DataFrame) else pd.DataFrame()
+    kpi = shared_payload.kpi_snapshot
+    period_df = shared_payload.df_period
+    channel_df = _build_dim_rank(period_df, "channel")
+    product_df = _build_dim_rank(period_df, "product_ticker")
+    geo_df = _build_dim_rank(period_df, "country")
+    anomalies_df = pd.DataFrame()
+    if shared_payload.monthly_period is not None and not shared_payload.monthly_period.empty and "nnb" in shared_payload.monthly_period.columns:
+        nnb_series = pd.to_numeric(shared_payload.monthly_period["nnb"], errors="coerce")
+        mean_nnb = float(nnb_series.mean()) if not nnb_series.dropna().empty else 0.0
+        std_nnb = float(nnb_series.std()) if float(nnb_series.std()) > 0 else float("nan")
+        zscore = (nnb_series - mean_nnb) / std_nnb if std_nnb == std_nnb else pd.Series([0.0] * len(nnb_series))
+        anomalies_df = pd.DataFrame(
+            {
+                "entity": shared_payload.monthly_period["month_end"].dt.strftime("%Y-%m"),
+                "value_current": nnb_series,
+                "zscore": zscore,
+            }
+        )
     suppressed: list[str] = []
+    LOGGER.info(
+        "commentary_payload scope=%s period=%s filters=%s rows_filtered=%d rows_period=%d kpi_end_aum=%.6f kpi_nnb=%.6f kpi_nnf=%.6f kpi_market=%.6f reconciled=%s variance=%.6f",
+        scope_label,
+        period,
+        {
+            "channel": tab1.get("tab1_filter_channel"),
+            "sub_channel": tab1.get("tab1_filter_sub_channel"),
+            "country": tab1.get("tab1_filter_country"),
+            "segment": tab1.get("tab1_filter_segment"),
+            "sub_segment": tab1.get("tab1_filter_sub_segment"),
+            "ticker": tab1.get("tab1_filter_ticker"),
+            "date_start": filters.date_start,
+            "date_end": filters.date_end,
+        },
+        int(len(shared_payload.df_filtered)),
+        int(len(shared_payload.df_period)),
+        float(pd.to_numeric(kpi.get("end_aum"), errors="coerce")),
+        float(pd.to_numeric(kpi.get("nnb"), errors="coerce")),
+        float(pd.to_numeric(kpi.get("nnf"), errors="coerce")),
+        float(pd.to_numeric(kpi.get("market_pnl"), errors="coerce")),
+        bool(shared_payload.reconciliation.get("ok")),
+        float(pd.to_numeric(shared_payload.reconciliation.get("variance"), errors="coerce")),
+    )
 
     st.markdown("#### Executive Overview")
     st.markdown("<div class='section-subtitle'>Growth direction, revenue quality, and market contribution.</div>", unsafe_allow_html=True)
-    report_scope = (filters.slice_dim + ": " + filters.slice_value) if (filters.slice_dim and filters.slice_value) else "Firm-wide portfolio"
-    c1, c2, c3, c4, c5 = st.columns(5)
-    c1.metric("End AUM (selected slice)", fmt_currency(snap.get("end_aum"), unit="auto", decimals=2))
-    c2.metric("MoM Growth", fmt_percent(snap.get("mom_pct"), decimals=2, signed=True))
-    c3.metric("YTD Growth", fmt_percent(snap.get("ytd_pct"), decimals=2, signed=True))
-    c4.metric("Net New Business", fmt_currency(snap.get("nnb"), unit="auto", decimals=2))
-    c5.metric("Market Impact", fmt_currency(snap.get("market_impact_abs"), unit="auto", decimals=2))
-    st.caption(f"Report slice: **{report_scope}**. All values = selected slice only (not enterprise AUM unless slice is Firm-wide).")
-    overview_list = _normalize_bullets(overview.bullets, 8)
-    if overview_list and len(overview_list[0]) > 120:
-        st.markdown(overview_list[0])
-        for b in overview_list[1:]:
-            st.markdown(f"- {b}")
-    else:
-        for b in overview_list:
-            st.markdown(f"- {b}")
-    if not _executive_chart(getattr(pack, "time_series", pd.DataFrame())):
+    c1, c2, c3, c4, c5, c6, c7 = st.columns(7)
+    c1.metric("Selected Scope End AUM", fmt_currency(kpi.get("end_aum"), unit="auto", decimals=2))
+    c2.metric("Begin AUM", fmt_currency(kpi.get("begin_aum"), unit="auto", decimals=2))
+    c3.metric("Net New Business", fmt_currency(kpi.get("nnb"), unit="auto", decimals=2))
+    c4.metric("Net New Flow", fmt_currency(kpi.get("nnf"), unit="auto", decimals=2))
+    c5.metric("Organic Growth", fmt_percent(kpi.get("ogr"), decimals=2, signed=True))
+    c6.metric("Market Impact", fmt_currency(kpi.get("market_pnl"), unit="auto", decimals=2))
+    c7.metric("Fee Yield", fmt_percent(kpi.get("fee_yield"), decimals=2, signed=True))
+    st.caption(f"Report slice: **{scope_label}**. All values are from the same filtered monthly source as Executive Dashboard KPIs.")
+    overview_list = _overview_bullets_from_payload(kpi, period=period)
+    for b in overview_list:
+        st.markdown(f"- {b}")
+    if not _executive_chart(shared_payload.monthly_period.rename(columns={"market_pnl": "market_impact_abs"})):
         _note("Time-series data in the selected range is insufficient for the executive chart.")
 
     st.markdown("#### Channel Analysis")
-    st.markdown("<div class='section-subtitle'>What this shows: channel concentration, leadership, and mix shift. Why it matters: see where flow and AUM are coming from and where to reallocate.</div>", unsafe_allow_html=True)
-    for b in _normalize_bullets(channel.bullets, 6):
+    st.markdown("<div class='section-subtitle'>Channel concentration, leadership, and mix shift.</div>", unsafe_allow_html=True)
+    for b in _section_bullets_from_rank(channel_df, "channel", "Channel"):
         st.markdown(f"- {b}")
-    if not _ranked_bar(channel_df, "Channel contributors by net new business", "tab2_channel", ["nnb", "aum_end", "value"]):
+    if not _ranked_bar(channel_df, "Channel contributors by net new business", "tab2_channel", ["nnb", "end_aum", "share"]):
         if has_minimum_categories(channel_df, _label_col(channel_df) or "", 1):
             _note("Channel concentration is fully driven by one distribution group.", "Concentration")
         else:
@@ -314,45 +440,46 @@ def render(state: FilterState, contract: dict[str, Any]) -> None:
         _note("Channel mix lacks enough variation for a secondary mix-shift view.", "Signal Note")
 
     st.markdown("#### Product and ETF Analysis")
-    st.markdown("<div class='section-subtitle'>What this shows: product-level flow quality, concentration, and ETF contribution. Why it matters: spot leaders, laggards, and concentration risk.</div>", unsafe_allow_html=True)
-    for b in _normalize_bullets(product.bullets, 6):
+    st.markdown("<div class='section-subtitle'>Product-level flow, concentration, and ETF contribution.</div>", unsafe_allow_html=True)
+    for b in _section_bullets_from_rank(product_df, "product_ticker", "Product"):
         st.markdown(f"- {b}")
-    if not _ranked_bar(product_df, "Product leaders and laggards", "tab2_product", ["nnb", "aum_end", "value"]):
+    if not _ranked_bar(product_df, "Product leaders and laggards", "tab2_product", ["nnb", "end_aum", "share"]):
         _note("Product mix shows limited cross-sectional dispersion in the selected slice.")
     elif not _mix_shift_or_concentration(product_df, "tab2_product", "Product"):
         _note("Product allocation shifts are limited under the selected slice.", "Signal Note")
 
     st.markdown("#### Geographic Analysis")
     st.markdown("<div class='section-subtitle'>What this shows: regional contribution and mix shift. Why it matters: see which geographies are driving or lagging.</div>", unsafe_allow_html=True)
-    for b in _normalize_bullets(geo.bullets, 6):
+    for b in _section_bullets_from_rank(geo_df, "country", "Geography"):
         st.markdown(f"- {b}")
     geo_label = _label_col(geo_df) or ""
     if has_minimum_categories(geo_df, geo_label, 2):
-        if not _ranked_bar(geo_df, "Geographic contribution by net new business", "tab2_geo", ["nnb", "aum_end", "value"]):
+        if not _ranked_bar(geo_df, "Geographic contribution by net new business", "tab2_geo", ["nnb", "end_aum", "share"]):
             _note("Geographic evidence exists but lacks meaningful variation for charting.")
     else:
         _note("Geographic view is concentrated in a single market, so no comparative chart is shown.", "Concentration")
 
     st.markdown("#### Anomalies and Flags")
-    st.markdown("<div class='section-subtitle'>What this shows: outliers and patterns that may need attention. Why it matters: focus review on items that deviate from baseline.</div>", unsafe_allow_html=True)
-    for b in _normalize_bullets(anomalies.bullets, 6):
+    st.markdown("<div class='section-subtitle'>Outliers and patterns for review.</div>", unsafe_allow_html=True)
+    anomaly_bullets = _anomaly_bullets_from_shared(anomalies_df)
+    for b in anomaly_bullets:
         st.markdown(f"- {b}")
     if anomalies_df is not None and not anomalies_df.empty:
         if not _ranked_bar(anomalies_df, "Anomaly intensity snapshot", "tab2_risk", ["zscore", "value_current"]):
             _note("Anomaly chart not shown: fewer than two meaningful data points in the selected range.")
 
     st.markdown("#### Recommendations")
-    st.markdown("<div class='section-subtitle'>What this shows: suggested next actions from anomalies, concentration, and mix shift. Why it matters: prioritize where to act.</div>", unsafe_allow_html=True)
+    st.markdown("<div class='section-subtitle'>Suggested next actions from anomalies and mix.</div>", unsafe_allow_html=True)
     actions = _normalize_bullets(recs.bullets, 6)
     for b in actions:
         st.markdown(f"- {b}")
 
     export_sections: list[tuple[str, SectionOutput]] = [
-        ("Executive Overview", SectionOutput(_normalize_bullets(overview.bullets, 8), overview.table_title, overview.table, overview.meta)),
-        ("Channel Analysis", SectionOutput(_normalize_bullets(channel.bullets, 6), channel.table_title, channel.table, channel.meta)),
-        ("Product and ETF Analysis", SectionOutput(_normalize_bullets(product.bullets, 6), product.table_title, product.table, product.meta)),
-        ("Geographic Analysis", SectionOutput(_normalize_bullets(geo.bullets, 6), geo.table_title, geo.table, geo.meta)),
-        ("Anomalies and Flags", SectionOutput(_normalize_bullets(anomalies.bullets, 6), anomalies.table_title, anomalies.table, anomalies.meta)),
+        ("Executive Overview", SectionOutput(overview_list, overview.table_title, overview.table, overview.meta)),
+        ("Channel Analysis", SectionOutput(_section_bullets_from_rank(channel_df, "channel", "Channel"), "Channel evidence", channel_df, {"source": "shared_payload.df_period"})),
+        ("Product and ETF Analysis", SectionOutput(_section_bullets_from_rank(product_df, "product_ticker", "Product"), "Product evidence", product_df, {"source": "shared_payload.df_period"})),
+        ("Geographic Analysis", SectionOutput(_section_bullets_from_rank(geo_df, "country", "Geography"), "Geographic evidence", geo_df, {"source": "shared_payload.df_period"})),
+        ("Anomalies and Flags", SectionOutput(anomaly_bullets, "Anomaly evidence", anomalies_df, {"source": "shared_payload.monthly_period"})),
         ("Recommendations", SectionOutput(actions, recs.table_title, recs.table, recs.meta)),
     ]
 
@@ -366,10 +493,10 @@ def render(state: FilterState, contract: dict[str, Any]) -> None:
             st.dataframe(format_df(recon_df, infer_common_formats(recon_df)), width="stretch", hide_index=True, height=min(220, 56 * len(recon_df) + 40))
         for name, tbl in [
             ("Executive evidence", overview.table),
-            ("Channel evidence", channel.table),
-            ("Product evidence", product.table),
-            ("Geographic evidence", geo.table),
-            ("Anomaly evidence", anomalies.table),
+            ("Channel evidence", channel_df),
+            ("Product evidence", product_df),
+            ("Geographic evidence", geo_df),
+            ("Anomaly evidence", anomalies_df),
             ("Recommendations evidence", recs.table),
         ]:
             if tbl is not None and not tbl.empty:
@@ -405,13 +532,28 @@ def render(state: FilterState, contract: dict[str, Any]) -> None:
 
     if st.session_state.get("dev_mode"):
         with st.expander("Investment Commentary (debug)", expanded=False):
-            st.json({"dataset_version": meta.get("dataset_version"), "filter_hash": meta.get("filter_hash"), "source_diagnostics": (getattr(pack, "meta", {}) or {}).get("source_diagnostics", {})})
+            parity = {
+                "shared_scope_label": shared_payload.scope_label,
+                "shared_period": shared_payload.period,
+                "shared_kpi": kpi,
+                "shared_reconciliation": shared_payload.reconciliation,
+            }
+            # Lightweight parity check against pack snapshot where available.
+            pack_snap = _first_row(snap_src if isinstance(snap_src, pd.DataFrame) else pd.DataFrame())
+            if pack_snap:
+                parity["pack_snapshot_compare"] = {
+                    "end_aum_delta": float(pd.to_numeric(kpi.get("end_aum"), errors="coerce") - pd.to_numeric(pack_snap.get("end_aum"), errors="coerce")),
+                    "nnb_delta": float(pd.to_numeric(kpi.get("nnb"), errors="coerce") - pd.to_numeric(pack_snap.get("nnb"), errors="coerce")),
+                    "nnf_delta": float(pd.to_numeric(kpi.get("nnf"), errors="coerce") - pd.to_numeric(pack_snap.get("nnf"), errors="coerce")),
+                }
+            st.json({"dataset_version": meta.get("dataset_version"), "filter_hash": meta.get("filter_hash"), "source_diagnostics": (getattr(pack, "meta", {}) or {}).get("source_diagnostics", {}), "parity": parity})
             try:
                 from app.metrics.snapshot import get_metrics_debug_info, validation_required_metrics
-                missing = validation_required_metrics(snap) if snap else ["no snapshot"]
+                shared_snap_df = pd.DataFrame([kpi])
+                missing = validation_required_metrics(kpi) if kpi else ["no snapshot"]
                 st.caption("Required metrics (missing -> fix source or period)")
                 st.json({"missing_required_metrics": missing})
                 st.caption("Canonical formulas / period debug")
-                st.json(get_metrics_debug_info(snap_src if isinstance(snap_src, pd.DataFrame) else None, None))
+                st.json(get_metrics_debug_info(shared_snap_df, None))
             except Exception:
                 pass
