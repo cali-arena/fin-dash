@@ -742,7 +742,7 @@ def _render_intelligence_desk(state: FilterState, contract: dict[str, Any]) -> N
     if LLM_API_KEY_KEY not in st.session_state:
         st.session_state[LLM_API_KEY_KEY] = ""
 
-    with st.expander("LLM settings (for Market Intelligence)", expanded=True):
+    with st.expander("LLM settings (for Market Intelligence)", expanded=False):
         _provider_default_idx = 1 if st.session_state.get(LLM_PROVIDER_KEY) == "OpenAI" else 0
         provider_ui = st.radio(
             "Provider",
