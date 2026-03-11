@@ -26,7 +26,7 @@ from app.config.tab1_defaults import (
     TAB1_DEFAULT_COUNTRY,
     TAB1_DEFAULT_PERIOD,
     TAB1_DEFAULT_PRODUCT_TICKER,
-    TAB1_DEFAULT_SEGMENT,
+    TAB1_DEFAULT_SALES_FOCUS,
     TAB1_DEFAULT_SUB_CHANNEL,
     TAB1_DEFAULT_SUB_SEGMENT,
     get_scope_label_from_state,
@@ -63,13 +63,14 @@ LOGGER = logging.getLogger(__name__)
 
 
 def _tab1_snapshot_for_parity() -> dict[str, Any]:
+    """Tab 1 state for report parity; Segment filter removed — source is always Fixed Income."""
     return {
         "tab1_period": st.session_state.get("tab1_period", TAB1_DEFAULT_PERIOD),
         "tab1_filter_channel": st.session_state.get("tab1_filter_channel", TAB1_DEFAULT_CHANNEL),
         "tab1_filter_sub_channel": st.session_state.get("tab1_filter_sub_channel", TAB1_DEFAULT_SUB_CHANNEL),
         "tab1_filter_country": st.session_state.get("tab1_filter_country", TAB1_DEFAULT_COUNTRY),
-        "tab1_filter_segment": st.session_state.get("tab1_filter_segment", TAB1_DEFAULT_SEGMENT),
         "tab1_filter_sub_segment": st.session_state.get("tab1_filter_sub_segment", TAB1_DEFAULT_SUB_SEGMENT),
+        "tab1_filter_sales_focus": st.session_state.get("tab1_filter_sales_focus", TAB1_DEFAULT_SALES_FOCUS),
         "tab1_filter_ticker": st.session_state.get("tab1_filter_ticker", TAB1_DEFAULT_PRODUCT_TICKER),
     }
 
@@ -346,7 +347,7 @@ def render(state: FilterState, contract: dict[str, Any]) -> None:
             channel=tab1.get("tab1_filter_channel", TAB1_DEFAULT_CHANNEL),
             sub_channel=tab1.get("tab1_filter_sub_channel", TAB1_DEFAULT_SUB_CHANNEL),
             country=tab1.get("tab1_filter_country", TAB1_DEFAULT_COUNTRY),
-            segment=tab1.get("tab1_filter_segment", TAB1_DEFAULT_SEGMENT),
+            segment=None,  # Segment filter removed: source is always Fixed Income
             sub_segment=tab1.get("tab1_filter_sub_segment", TAB1_DEFAULT_SUB_SEGMENT),
             ticker=tab1.get("tab1_filter_ticker", TAB1_DEFAULT_PRODUCT_TICKER),
         )
@@ -394,8 +395,8 @@ def render(state: FilterState, contract: dict[str, Any]) -> None:
             "channel": tab1.get("tab1_filter_channel"),
             "sub_channel": tab1.get("tab1_filter_sub_channel"),
             "country": tab1.get("tab1_filter_country"),
-            "segment": tab1.get("tab1_filter_segment"),
             "sub_segment": tab1.get("tab1_filter_sub_segment"),
+            "sales_focus": tab1.get("tab1_filter_sales_focus"),
             "ticker": tab1.get("tab1_filter_ticker"),
             "date_start": filters.date_start,
             "date_end": filters.date_end,

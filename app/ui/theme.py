@@ -171,14 +171,6 @@ def inject_global_theme_css() -> None:
             margin-top: -0.15rem;
             margin-bottom: 0.5rem;
         }
-        .insight-banner {
-            border: 1px solid #36507f;
-            border-left: 5px solid #8fb4ff;
-            border-radius: 12px;
-            padding: 0.8rem 0.95rem;
-            background: linear-gradient(135deg, rgba(23,40,77,0.95), rgba(17,29,58,0.95));
-            margin-bottom: 0.6rem;
-        }
         .hero-narrative {
             border: 1px solid #2a3d67;
             border-left: 5px solid #8fb4ff;
@@ -245,38 +237,45 @@ def inject_global_theme_css() -> None:
             color: #b7c5e3;
             margin-bottom: 0.25rem;
         }
-        /* Reporting period date inputs + filter dropdowns: readable on dark navy */
+        /* Reporting period date inputs: minimal scoped fix for visible value on dark navy */
         [data-testid="stDateInput"] label,
         [data-testid="stDateInput"] p {
             color: #b7c5e3 !important;
         }
-        [data-testid="stDateInput"] input,
-        [data-testid="stDateInput"] input::placeholder {
-            color: #f8fbff !important;
+        /* Visible date value: BaseWeb shows it in an input; calendar trigger is a button */
+        [data-testid="stDateInput"] input {
+            color: #e2e8f0 !important;
             background-color: #111d3a !important;
             border-color: #2a3d67 !important;
         }
         [data-testid="stDateInput"] input::placeholder {
-            opacity: 0.85;
+            color: #94a3b8 !important;
         }
         [data-testid="stDateInput"] input:focus {
             border-color: #4c7edb !important;
             box-shadow: 0 0 0 1px #4c7edb !important;
+            outline: none;
         }
         [data-testid="stDateInput"] [data-baseweb="input"] {
             background-color: #111d3a !important;
             border-color: #2a3d67 !important;
         }
         [data-testid="stDateInput"] [data-baseweb="input"] input {
-            color: #f8fbff !important;
+            color: #e2e8f0 !important;
         }
+        /* Calendar trigger button (can show date in some layouts): readable text */
         [data-testid="stDateInput"] button {
             background-color: #17284d !important;
             border-color: #2a3d67 !important;
-            color: #f8fbff !important;
+            color: #e2e8f0 !important;
         }
         [data-testid="stDateInput"] button:hover {
             border-color: #4c7edb !important;
+            color: #e2e8f0 !important;
+        }
+        [data-testid="stDateInput"] button span,
+        [data-testid="stDateInput"] button div {
+            color: #e2e8f0 !important;
         }
         /* Selectbox / dropdown selected value on dark background */
         [data-testid="stSelectbox"] label,

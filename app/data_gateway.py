@@ -3225,6 +3225,68 @@ def get_last_refresh_ts(root: Path | None = None) -> str:
     return DataGateway(root or Path.cwd()).get_last_refresh_ts()
 
 
+def load_dim_lookup(root: Path | None = None) -> pd.DataFrame:
+    """
+    Load product dimension lookup from data/curated/data_raw_normalized.parquet.
+    Returns de-duped (product_ticker, channel_group, sub_channel, country, sales_focus, sub_segment) rows.
+    All file access stays in the gateway.
+    """
+    base = root or Path.cwd()
+    path = base / "data" / "curated" / "data_raw_normalized.parquet"
+    if not path.exists():
+        return pd.DataFrame()
+    try:
+        df = pd.read_parquet(
+            path,
+            columns=["product_ticker", "channel_raw", "channel_standard", "src_country", "uswa_sales_focus_2020", "sub_segment"],
+        )
+        df = df.rename(columns={
+            "channel_raw": "channel_group",
+            "channel_standard": "sub_channel",
+            "src_country": "country",
+            "uswa_sales_focus_2020": "sales_focus",
+        })
+        for col in ("channel_group", "sub_channel", "country", "sales_focus", "sub_segment", "product_ticker"):
+            if col in df.columns:
+                df[col] = df[col].fillna("Unassigned").astype(str).str.strip().replace("", "Unassigned")
+        _CH_DISPLAY: dict[str, str] = {
+            "Bwm": "National Private Bank",
+            "Non-Us": "Non-US / International",
+        }
+        if "channel_group" in df.columns:
+            df["channel_group"] = df["channel_group"].replace(_CH_DISPLAY)
+        return df.drop_duplicates().reset_index(drop=True)
+    except Exception:
+        return pd.DataFrame()
+
+
+def load_etf_reference(root: Path | None = None) -> pd.DataFrame:
+    """
+    Load ETF reference enrichment from data/curated/etf_raw.parquet.
+    Returns ticker → sub_asset_class, duration_yrs, oas, sec_yield_pct, esg_rating.
+    All file access stays in the gateway.
+    """
+    base = root or Path.cwd()
+    path = base / "data" / "curated" / "etf_raw.parquet"
+    if not path.exists():
+        return pd.DataFrame()
+    try:
+        df = pd.read_parquet(path)
+        df = df[df["Ticker"].notna() & (df["Ticker"].astype(str) != "None")].copy()
+        df = df.rename(columns={
+            "Ticker": "product_ticker",
+            "Sub Asset Class": "sub_asset_class",
+            "Fixed Income Characteristics": "duration_yrs",
+            "Unnamed: 54": "oas",
+            "Unnamed: 50": "sec_yield_pct",
+            "Sustainability Characteristics (MSCI ESG Fund Ratings)": "esg_rating",
+        })
+        keep = ["product_ticker", "sub_asset_class", "duration_yrs", "oas", "sec_yield_pct", "esg_rating"]
+        return df[[c for c in keep if c in df.columns]].copy()
+    except Exception:
+        return pd.DataFrame()
+
+
 # ---- Governed query layer (Tab 1): single interface, strict filter normalization + caching ----
 # All Tab 1 visuals must call only these; no direct DuckDB/parquet in pages.
 # Cache key: dataset_version, filter_state_hash(normalize_filters(filters)), query_name, and metric/view where applicable.

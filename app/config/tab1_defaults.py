@@ -18,8 +18,9 @@ TAB1_DEFAULT_PERIOD = "YTD"
 TAB1_DEFAULT_CHANNEL = "All"
 TAB1_DEFAULT_SUB_CHANNEL = "All"
 TAB1_DEFAULT_COUNTRY = "All"
-TAB1_DEFAULT_SEGMENT = "All"
+# NOTE: Segment filter is intentionally absent — source data is always Fixed Income.
 TAB1_DEFAULT_SUB_SEGMENT = "All"
+TAB1_DEFAULT_SALES_FOCUS = "All"
 TAB1_DEFAULT_PRODUCT_TICKER = "All"
 
 # Scope mode: "firm" = firm-wide (all filters All), "slice" = selected slice (any filter set).
@@ -35,8 +36,8 @@ def get_tab1_governed_defaults() -> dict[str, str]:
         "tab1_filter_channel": TAB1_DEFAULT_CHANNEL,
         "tab1_filter_sub_channel": TAB1_DEFAULT_SUB_CHANNEL,
         "tab1_filter_country": TAB1_DEFAULT_COUNTRY,
-        "tab1_filter_segment": TAB1_DEFAULT_SEGMENT,
         "tab1_filter_sub_segment": TAB1_DEFAULT_SUB_SEGMENT,
+        "tab1_filter_sales_focus": TAB1_DEFAULT_SALES_FOCUS,
         "tab1_filter_ticker": TAB1_DEFAULT_PRODUCT_TICKER,
     }
 
@@ -47,8 +48,8 @@ def get_tab1_dimension_keys() -> list[str]:
         "tab1_filter_channel",
         "tab1_filter_sub_channel",
         "tab1_filter_country",
-        "tab1_filter_segment",
         "tab1_filter_sub_segment",
+        "tab1_filter_sales_focus",
         "tab1_filter_ticker",
     ]
 
@@ -76,8 +77,8 @@ def get_scope_label_from_state(state_snapshot: dict[str, Any]) -> str:
         return f"Selected slice (Product: {state_snapshot.get('tab1_filter_ticker', 'All')})"
     if state_snapshot.get("tab1_filter_sub_segment", "All") not in (None, "", "All"):
         return f"Selected slice (Sub-segment: {state_snapshot.get('tab1_filter_sub_segment', 'All')})"
-    if state_snapshot.get("tab1_filter_segment", "All") not in (None, "", "All"):
-        return f"Selected slice (Segment: {state_snapshot.get('tab1_filter_segment', 'All')})"
+    if state_snapshot.get("tab1_filter_sales_focus", "All") not in (None, "", "All"):
+        return f"Selected slice (Sales Focus: {state_snapshot.get('tab1_filter_sales_focus', 'All')})"
     if state_snapshot.get("tab1_filter_country", "All") not in (None, "", "All"):
         return f"Selected slice (Geography: {state_snapshot.get('tab1_filter_country', 'All')})"
     if state_snapshot.get("tab1_filter_sub_channel", "All") not in (None, "", "All"):
