@@ -97,9 +97,78 @@ def inject_global_theme_css() -> None:
         div[data-baseweb="select"] > div,
         div[data-baseweb="input"] > div,
         div[data-baseweb="textarea"] > div {
-            background: #111d3a !important;
+            background: #17284d !important;
             border-color: #2a3d67 !important;
             color: #f8fbff !important;
+        }
+        /* Centralized dark-theme form layer: text_area, text_input, chat/prompt fields, select/search */
+        [data-testid="stTextInput"] label,
+        [data-testid="stTextArea"] label {
+            color: #b7c5e3 !important;
+        }
+        [data-testid="stTextInput"] input,
+        [data-testid="stTextArea"] textarea,
+        [data-baseweb="input"] input,
+        [data-baseweb="textarea"] textarea {
+            color: #f8fbff !important;
+            -webkit-text-fill-color: #f8fbff !important;
+            caret-color: #8fb4ff !important;
+            background-color: #17284d !important;
+            border: 1px solid #2a3d67 !important;
+            border-radius: 8px !important;
+        }
+        [data-testid="stTextInput"] input::placeholder,
+        [data-testid="stTextArea"] textarea::placeholder,
+        [data-baseweb="input"] input::placeholder,
+        [data-baseweb="textarea"] textarea::placeholder {
+            color: #8b9dc3 !important;
+            opacity: 1 !important;
+        }
+        [data-testid="stTextInput"] input:focus,
+        [data-testid="stTextArea"] textarea:focus,
+        [data-baseweb="input"] input:focus,
+        [data-baseweb="textarea"] textarea:focus {
+            color: #f8fbff !important;
+            -webkit-text-fill-color: #f8fbff !important;
+            background-color: #17284d !important;
+            border-color: #4c7edb !important;
+            box-shadow: 0 0 0 1px #4c7edb !important;
+            outline: none !important;
+        }
+        [data-testid="stTextInput"] input:disabled,
+        [data-testid="stTextArea"] textarea:disabled,
+        [data-baseweb="input"] input:disabled,
+        [data-baseweb="textarea"] textarea:disabled {
+            color: #c7d4ee !important;
+            -webkit-text-fill-color: #c7d4ee !important;
+            opacity: 1 !important;
+            background-color: #1e3a5f !important;
+        }
+        [data-testid="stTextInput"] input::selection,
+        [data-testid="stTextArea"] textarea::selection,
+        [data-baseweb="input"] input::selection,
+        [data-baseweb="textarea"] textarea::selection {
+            background: #4c7edb !important;
+            color: #f8fbff !important;
+        }
+        /* Prevent browser autofill from making typed text dark on dark background */
+        [data-testid="stTextInput"] input:-webkit-autofill,
+        [data-testid="stTextInput"] input:-webkit-autofill:hover,
+        [data-testid="stTextInput"] input:-webkit-autofill:focus,
+        [data-testid="stTextArea"] textarea:-webkit-autofill,
+        [data-testid="stTextArea"] textarea:-webkit-autofill:hover,
+        [data-testid="stTextArea"] textarea:-webkit-autofill:focus,
+        [data-baseweb="input"] input:-webkit-autofill,
+        [data-baseweb="input"] input:-webkit-autofill:hover,
+        [data-baseweb="input"] input:-webkit-autofill:focus,
+        [data-baseweb="textarea"] textarea:-webkit-autofill,
+        [data-baseweb="textarea"] textarea:-webkit-autofill:hover,
+        [data-baseweb="textarea"] textarea:-webkit-autofill:focus {
+            -webkit-text-fill-color: #f8fbff !important;
+            -webkit-box-shadow: 0 0 0 1000px #17284d inset !important;
+            box-shadow: 0 0 0 1000px #17284d inset !important;
+            caret-color: #8fb4ff !important;
+            transition: background-color 5000s ease-in-out 0s;
         }
         /* Opened dropdown menu readability only (BaseWeb) */
         div[role="listbox"] * {

@@ -810,6 +810,16 @@ def _inject_nlq_page_css() -> None:
         .nlq-fallback-note { color: #8b9dc3; font-size: 0.8rem; margin: 0.2rem 0 0.35rem 0; font-style: italic; }
         .nlq-empty-state { border: 1px solid #2a3d67; border-radius: 8px; padding: 0.5rem 0.65rem; background: rgba(17,29,58,0.5); font-size: 0.88rem; color: #b7c5e3; margin: 0.25rem 0 0.4rem 0; }
         .nlq-empty-state .nlq-empty-title { color: #f8fbff; font-weight: 600; font-size: 0.9rem; margin-bottom: 0.15rem; }
+        /* Chat message box: ensure typed text readable on dark (reinforces global form layer) */
+        [data-testid="stTextArea"] textarea,
+        [data-testid="stTextArea"] [data-baseweb="textarea"] textarea {
+            color: #f8fbff !important;
+            -webkit-text-fill-color: #f8fbff !important;
+            background-color: #17284d !important;
+        }
+        [data-testid="stTextArea"] textarea::placeholder {
+            color: #8b9dc3 !important;
+        }
         /* Tighten widget spacing for this page */
         div[data-testid="stTextInput"] { margin-bottom: 0.2rem !important; }
         div[data-testid="stRadio"] { margin-bottom: 0.15rem !important; }
