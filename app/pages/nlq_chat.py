@@ -7,6 +7,7 @@ Loaded by app/main.py via PAGE_RENDERERS["nlq_chat"] = render_nlq_chat — this 
 from __future__ import annotations
 
 import logging
+import importlib.util
 import re
 from calendar import monthrange
 from dataclasses import dataclass
@@ -33,9 +34,15 @@ from app.ui.theme import apply_enterprise_plotly_style, safe_render_plotly
 
 # Claude client: optional; must not crash app if missing or broken (cloud-safe)
 try:
-    from app.services.claude_client import ClaudeError, claude_generate, has_claude_api_key
+    from app.services.claude_client import (
+        ClaudeError,
+        anthropic_sdk_available,
+        claude_generate,
+        has_claude_api_key,
+    )
 except Exception:
     ClaudeError = Exception  # type: ignore[misc, assignment]
+    anthropic_sdk_available = None  # type: ignore[assignment]
     claude_generate = None  # type: ignore[assignment]
     has_claude_api_key = None  # type: ignore[assignment]
 
@@ -43,6 +50,8 @@ ROOT = Path(__file__).resolve().parents[2]
 KNOWN_ETF_TICKERS = frozenset({"AGG", "HYG", "TIP", "MUB", "MBB", "IUSB", "SUB"})
 CHAT_HISTORY_KEY = "nlq_chat_history"
 logger = logging.getLogger(__name__)
+BUILD_MARKER = "claude-cloud-deploy-2026-03-13"
+CLAUDE_DEBUG_KEY = "nlq_claude_debug"
 
 
 @dataclass(frozen=True)
@@ -520,21 +529,50 @@ def _claude_key_configured() -> bool:
         return False
 
 
+def _claude_sdk_available() -> bool:
+    if anthropic_sdk_available is not None:
+        try:
+            available = bool(anthropic_sdk_available())
+            return available
+        except Exception:
+            return False
+    try:
+        return importlib.util.find_spec("anthropic") is not None
+    except Exception:
+        return False
+
+
+def _set_claude_debug(*, secret_detected: bool, path_selected: bool, request_success: str) -> None:
+    st.session_state[CLAUDE_DEBUG_KEY] = {
+        "build_marker": BUILD_MARKER,
+        "secret_detected": secret_detected,
+        "sdk_available": _claude_sdk_available(),
+        "path_selected": path_selected,
+        "request_success": request_success,
+    }
+
+
 def _get_data_narrative(payload: dict[str, Any]) -> tuple[str, str | None]:
     """Data Questions narrative + fallback warning. Uses Claude when configured."""
     secret_detected = _claude_key_configured()
-    path_selected = bool(secret_detected and claude_generate is not None)
+    sdk_available = _claude_sdk_available()
+    path_selected = bool(secret_detected and sdk_available and claude_generate is not None)
     logger.info(
-        "DEBUG Claude data_path secret_detected=%s path_selected=%s request_success=n/a",
+        "[%s] DEBUG Claude data_path secret_detected=%s sdk_available=%s path_selected=%s request_success=n/a",
+        BUILD_MARKER,
         "yes" if secret_detected else "no",
+        "yes" if sdk_available else "no",
         "yes" if path_selected else "no",
     )
+    _set_claude_debug(secret_detected=secret_detected, path_selected=path_selected, request_success="n/a")
     if not secret_detected:
-        logger.info("Data narrative routing: Claude unavailable (secret missing)")
-        return "", "Narrative unavailable. Verified output below."
-    if claude_generate is None:
-        logger.warning("Data narrative routing: Claude unavailable (client import failed)")
-        return "", "Narrative unavailable. Verified output below."
+        logger.info("[%s] Data narrative routing: Claude unavailable (secret missing)", BUILD_MARKER)
+        _set_claude_debug(secret_detected=False, path_selected=False, request_success="no")
+        return "", "Claude secret is not configured. Verified output shown."
+    if not sdk_available or claude_generate is None:
+        logger.warning("[%s] Data narrative routing: Claude unavailable (SDK/import issue)", BUILD_MARKER)
+        _set_claude_debug(secret_detected=True, path_selected=False, request_success="no")
+        return "", "Anthropic SDK unavailable in deployment. Verified output shown."
     model = (st.session_state.get(LLM_MODEL_KEY) or DEFAULT_CLAUDE_MODEL).strip() or DEFAULT_CLAUDE_MODEL
     prompt = (
         "You are a concise analyst.\n"
@@ -544,20 +582,23 @@ def _get_data_narrative(payload: dict[str, Any]) -> tuple[str, str | None]:
         f"{payload}"
     )
     try:
-        logger.info("Data narrative routing selected Claude (model=%s)", model)
+        logger.info("[%s] Data narrative routing selected Claude (model=%s)", BUILD_MARKER, model)
         with st.spinner("Generating narrative..."):
             narrative = claude_generate(prompt=prompt, model=model, max_tokens=512)
-        logger.info("Data narrative Claude request succeeded")
-        logger.info("DEBUG Claude data_path secret_detected=yes path_selected=yes request_success=yes")
+        logger.info("[%s] Data narrative Claude request succeeded", BUILD_MARKER)
+        logger.info("[%s] DEBUG Claude data_path secret_detected=yes sdk_available=yes path_selected=yes request_success=yes", BUILD_MARKER)
+        _set_claude_debug(secret_detected=True, path_selected=True, request_success="yes")
         return narrative, None
-    except (ClaudeError, RuntimeError):
-        logger.warning("Data narrative Claude request failed")
-        logger.info("DEBUG Claude data_path secret_detected=yes path_selected=yes request_success=no")
-        return "", "Narrative unavailable. Verified output below."
-    except Exception:
-        logger.exception("Data narrative Claude request failed unexpectedly")
-        logger.info("DEBUG Claude data_path secret_detected=yes path_selected=yes request_success=no")
-        return "", "Narrative unavailable. Verified output below."
+    except (ClaudeError, RuntimeError) as e:
+        logger.warning("[%s] Data narrative Claude request failed: %s: %s", BUILD_MARKER, type(e).__name__, str(e))
+        logger.info("[%s] DEBUG Claude data_path secret_detected=yes sdk_available=yes path_selected=yes request_success=no", BUILD_MARKER)
+        _set_claude_debug(secret_detected=True, path_selected=True, request_success="no")
+        return "", "Claude request failed. Verified output shown."
+    except Exception as e:
+        logger.exception("[%s] Data narrative Claude request failed unexpectedly: %s", BUILD_MARKER, type(e).__name__)
+        logger.info("[%s] DEBUG Claude data_path secret_detected=yes sdk_available=yes path_selected=yes request_success=no", BUILD_MARKER)
+        _set_claude_debug(secret_detected=True, path_selected=True, request_success="no")
+        return "", "Claude request failed. Verified output shown."
 
 
 def _render_prompt_presets(is_data_mode: bool) -> None:
@@ -636,6 +677,18 @@ def _render_response_area(state: FilterState, contract: dict[str, Any]) -> None:
             "</div>",
             unsafe_allow_html=True,
         )
+        dbg = st.session_state.get(CLAUDE_DEBUG_KEY) or {}
+        if dbg:
+            st.caption(
+                "Build: {build} | Anthropic secret detected: {secret} | Anthropic SDK import available: {sdk} | "
+                "Claude path selected: {path} | Claude request succeeded: {req}".format(
+                    build=dbg.get("build_marker", BUILD_MARKER),
+                    secret="yes" if dbg.get("secret_detected") else "no",
+                    sdk="yes" if dbg.get("sdk_available") else "no",
+                    path="yes" if dbg.get("path_selected") else "—",
+                    req=dbg.get("request_success", "—"),
+                )
+            )
         return
 
     st.markdown("<div class='nlq-divider'></div>", unsafe_allow_html=True)
@@ -647,6 +700,18 @@ def _render_response_area(state: FilterState, contract: dict[str, Any]) -> None:
     response_meta = (resp.get("response_meta") or "").strip()
     if response_meta:
         st.markdown(f"<div class='nlq-response-meta'>{response_meta}</div>", unsafe_allow_html=True)
+    dbg = st.session_state.get(CLAUDE_DEBUG_KEY) or {}
+    if dbg:
+        st.caption(
+            "Build marker: {build} | Anthropic secret detected: {secret} | Anthropic SDK import available: {sdk} | "
+            "Claude path selected: {path} | Claude request succeeded: {req}".format(
+                build=dbg.get("build_marker", BUILD_MARKER),
+                secret="yes" if dbg.get("secret_detected") else "no",
+                sdk="yes" if dbg.get("sdk_available") else "no",
+                path="yes" if dbg.get("path_selected") else "no",
+                req=dbg.get("request_success", "n/a"),
+            )
+        )
 
     error = resp.get("error")
     if error:
@@ -761,7 +826,16 @@ def render(state: FilterState, contract: dict[str, Any]) -> None:
 def _render_intelligence_desk(state: FilterState, contract: dict[str, Any]) -> None:
     """Intelligence Desk UI implementation."""
     _ = contract
+    logger.info("[%s] Intelligence Desk render start", BUILD_MARKER)
     _inject_nlq_page_css()
+
+    # Initial deployment debug state so marker is visible before first request (easy to remove later)
+    if CLAUDE_DEBUG_KEY not in st.session_state:
+        _set_claude_debug(
+            secret_detected=_claude_key_configured(),
+            path_selected=False,
+            request_success="—",
+        )
 
     # --- 1. Page header (compact) ---
     st.title("Intelligence Desk")
@@ -898,31 +972,41 @@ def _render_intelligence_desk(state: FilterState, contract: dict[str, Any]) -> N
     if route_to_market:
         model = (st.session_state.get(LLM_MODEL_KEY) or DEFAULT_CLAUDE_MODEL).strip() or DEFAULT_CLAUDE_MODEL
         has_key = _claude_key_configured()
-        logger.info("Market routing selected Claude (secret_detected=%s, model=%s)", has_key, model)
+        sdk_available = _claude_sdk_available()
+        logger.info("[%s] Market routing selected Claude (secret_detected=%s, sdk_available=%s, model=%s)", BUILD_MARKER, has_key, sdk_available, model)
         logger.info(
-            "DEBUG Claude market_path secret_detected=%s path_selected=%s request_success=n/a",
+            "[%s] DEBUG Claude market_path secret_detected=%s sdk_available=%s path_selected=%s request_success=n/a",
+            BUILD_MARKER,
             "yes" if has_key else "no",
-            "yes" if (has_key and claude_generate is not None) else "no",
+            "yes" if sdk_available else "no",
+            "yes" if (has_key and sdk_available and claude_generate is not None) else "no",
+        )
+        _set_claude_debug(
+            secret_detected=has_key,
+            path_selected=bool(has_key and sdk_available and claude_generate is not None),
+            request_success="n/a",
         )
 
         if not has_key:
+            _set_claude_debug(secret_detected=False, path_selected=False, request_success="no")
             _set_nlq_response(
                 intent="market_intelligence",
                 header="Market Intelligence - external sources",
                 subtitle="This answer reflects external context, not your internal book.",
-                error="Claude narrative unavailable: ANTHROPIC_API_KEY is not configured in Streamlit secrets.",
+                error="Claude secret is not configured.",
                 response_meta="Response type: Market Intelligence (External)",
             )
             _render_response_area(state, contract)
             _render_compact_history()
             return
 
-        if claude_generate is None:
+        if not sdk_available or claude_generate is None:
+            _set_claude_debug(secret_detected=True, path_selected=False, request_success="no")
             _set_nlq_response(
                 intent="market_intelligence",
                 header="Market Intelligence - external sources",
                 subtitle="This answer reflects external context, not your internal book.",
-                error="Claude unavailable in this deployment.",
+                error="Anthropic SDK unavailable in deployment.",
                 response_meta="Response type: Market Intelligence (External)",
             )
             _render_response_area(state, contract)
@@ -952,8 +1036,9 @@ def _render_intelligence_desk(state: FilterState, contract: dict[str, Any]) -> N
         try:
             with st.spinner("Generating market brief..."):
                 answer = claude_generate(prompt=prompt, model=model)
-            logger.info("Market Claude request succeeded (model=%s)", model)
-            logger.info("DEBUG Claude market_path secret_detected=yes path_selected=yes request_success=yes")
+            logger.info("[%s] Market Claude request succeeded (model=%s)", BUILD_MARKER, model)
+            logger.info("[%s] DEBUG Claude market_path secret_detected=yes sdk_available=yes path_selected=yes request_success=yes", BUILD_MARKER)
+            _set_claude_debug(secret_detected=True, path_selected=True, request_success="yes")
             _set_nlq_response(
                 intent="market_intelligence",
                 header="Market Intelligence - external sources",
@@ -962,28 +1047,32 @@ def _render_intelligence_desk(state: FilterState, contract: dict[str, Any]) -> N
                 provider_meta=f"Claude (Anthropic) | {model}",
                 response_meta=f"Response type: Market Intelligence (External) | Provider: Claude (Anthropic) | Model: {model}",
             )
-        except ClaudeError:
-            logger.warning("Market Claude request failed")
-            logger.info("DEBUG Claude market_path secret_detected=yes path_selected=yes request_success=no")
+        except ClaudeError as e:
+            logger.warning("[%s] Market Claude request failed: %s: %s", BUILD_MARKER, type(e).__name__, str(e))
+            logger.info("[%s] DEBUG Claude market_path secret_detected=yes sdk_available=yes path_selected=yes request_success=no", BUILD_MARKER)
+            _set_claude_debug(secret_detected=True, path_selected=True, request_success="no")
             _set_nlq_response(
                 intent="market_intelligence",
                 header="Market Intelligence - external sources",
                 subtitle="This answer reflects external context, not your internal book.",
-                error="Claude unavailable. Please try again or check app configuration.",
+                error="Claude request failed. Verified output shown.",
                 response_meta=f"Response type: Market Intelligence (External) | Provider: Claude (Anthropic) | Model: {model}",
             )
         except RuntimeError:
-            logger.warning("Market Claude request failed: RuntimeError")
-            logger.info("DEBUG Claude market_path secret_detected=yes path_selected=yes request_success=no")
+            logger.warning("[%s] Market Claude request failed: RuntimeError", BUILD_MARKER)
+            logger.info("[%s] DEBUG Claude market_path secret_detected=yes sdk_available=yes path_selected=yes request_success=no", BUILD_MARKER)
+            _set_claude_debug(secret_detected=True, path_selected=True, request_success="no")
             _set_nlq_response(
                 intent="market_intelligence",
                 header="Market Intelligence - external sources",
                 subtitle="This answer reflects external context, not your internal book.",
-                error="Claude unavailable. Please try again.",
+                error="Claude request failed. Verified output shown.",
                 response_meta=f"Response type: Market Intelligence (External) | Provider: Claude (Anthropic) | Model: {model}",
             )
-        except Exception:
-            logger.info("DEBUG Claude market_path secret_detected=yes path_selected=yes request_success=no")
+        except Exception as e:
+            logger.warning("[%s] Market Claude request failed unexpectedly: %s: %s", BUILD_MARKER, type(e).__name__, str(e))
+            logger.info("[%s] DEBUG Claude market_path secret_detected=yes sdk_available=yes path_selected=yes request_success=no", BUILD_MARKER)
+            _set_claude_debug(secret_detected=True, path_selected=True, request_success="no")
             _set_nlq_response(
                 intent="market_intelligence",
                 header="Market Intelligence - external sources",

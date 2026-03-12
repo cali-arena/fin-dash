@@ -17,6 +17,8 @@ Or: `make run`. Open `http://localhost:8501`.
 
 - **Main file path:** `app/main.py`
 - **Root:** Run from repo root; all paths are relative (no Windows-specific paths).
+- **Canonical deps:** `requirements.txt` (Streamlit Cloud uses this; keep `anthropic` here for Claude).
+- **Claude:** Uses Streamlit secrets (`ANTHROPIC_API_KEY`); no UI key entry. Redeploy or reboot app after changing secrets.
 - See **docs/DEPLOY.md** for structure, checklist, and validation.
 
 ## Guardrail: No Direct Data Access

@@ -75,6 +75,12 @@ FINANCE_DASH/
   - `DUCKDB_SCHEMA` – optional; default `data`.
 - **Special notes:** Ensure `data/` and/or a prebuilt `analytics.duckdb` are available (e.g. committed sample or ETL run). The app uses relative paths from repo root.
 
+### 3.1.1 Canonical dependency file and Claude (Streamlit Community Cloud)
+
+- **Canonical dependency file for Streamlit Cloud is `requirements.txt`** at repo root. Community Cloud does not install from pyproject.toml; it uses the repo’s dependency file (this project’s is `requirements.txt`). Keep `anthropic>=0.39` in `requirements.txt` for Claude (Intelligence Desk).
+- **Claude uses Streamlit secrets only.** Set `ANTHROPIC_API_KEY` in the app’s *Secrets* (App Settings → Secrets). The app does not use manual API-key entry in the UI.
+- **Reboot or redeploy** after changing secrets or after changing deployment-critical files (e.g. `requirements.txt`). A simple push does not reload secrets; use “Reboot app” or redeploy so the new environment is used.
+
 ### 3.2 DuckDB backend (recommended for Streamlit Cloud)
 
 To run the dashboard in the cloud using the **DuckDB single-file data backend**, the repository must contain these files (all paths relative to repo root):

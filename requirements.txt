@@ -1,3 +1,5 @@
+# Canonical dependency file for Streamlit Cloud. Community Cloud installs from this file only.
+# Do not rely on pyproject.toml for Cloud; keep anthropic here for Claude (Intelligence Desk).
 # Streamlit Cloud / production runtime (app only; ETL has its own env if needed)
 streamlit>=1.28
 pandas>=2.0

@@ -2,6 +2,8 @@
 requires = ["setuptools>=61", "wheel"]
 build-backend = "setuptools.build_meta"
 
+# For local dev / pip install -e . Align with requirements.txt where possible.
+# Streamlit Cloud uses requirements.txt (canonical); see README and docs/DEPLOY.md.
 [project]
 name = "finance-dash"
 version = "0.1.0"
@@ -15,6 +17,8 @@ dependencies = [
     "pyyaml",
     "plotly",
     "tabulate",
+    "anthropic>=0.39",
+    "openai>=1.0",
 ]
 
 [project.optional-dependencies]

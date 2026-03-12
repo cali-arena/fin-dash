@@ -9,6 +9,7 @@ import time
 import streamlit as st
 
 logger = logging.getLogger(__name__)
+BUILD_MARKER = "claude-cloud-deploy-2026-03-13"
 
 MAX_PROMPT_CHARS = 100_000
 MAX_TOKENS_CAP = 4096
@@ -28,23 +29,36 @@ def has_claude_api_key() -> bool:
     try:
         key = (st.secrets.get("ANTHROPIC_API_KEY") or "").strip()
         configured = bool(key and key != "your-key-here")
-        logger.info("Claude secret detected=%s", configured)
+        logger.info("[%s] Claude secret detected=%s", BUILD_MARKER, configured)
         return configured
     except Exception:
-        logger.info("Claude secret detected=False (secrets unavailable)")
+        logger.info("[%s] Claude secret detected=False (secrets unavailable)", BUILD_MARKER)
+        return False
+
+
+def anthropic_sdk_available() -> bool:
+    try:
+        import anthropic  # noqa: F401
+        logger.info("[%s] Anthropic SDK import available=True", BUILD_MARKER)
+        return True
+    except Exception:
+        logger.info("[%s] Anthropic SDK import available=False", BUILD_MARKER)
         return False
 
 
 def get_claude_client():
     try:
         from anthropic import Anthropic
+        logger.info("[%s] Anthropic SDK import available=True (client init)", BUILD_MARKER)
     except Exception as e:
-        logger.warning("Claude SDK import failed: %s", type(e).__name__)
+        logger.warning("[%s] Anthropic SDK import available=False (client init): %s", BUILD_MARKER, type(e).__name__)
         raise ClaudeError("Claude SDK is unavailable in this deployment.") from e
     api_key = (st.secrets.get("ANTHROPIC_API_KEY") or "").strip()
     if not api_key or api_key == "your-key-here":
         raise ClaudeError("Claude is not configured.")
-    return Anthropic(api_key=api_key)
+    client = Anthropic(api_key=api_key)
+    logger.info("[%s] Claude client init success=True", BUILD_MARKER)
+    return client
 
 
 def _truncate_prompt(prompt: str, max_chars: int = MAX_PROMPT_CHARS) -> str:
@@ -90,7 +104,8 @@ def claude_generate(
         )
         duration_s = time.perf_counter() - start
         logger.info(
-            "Claude request completed: prompt_len=%d, model=%s, duration_sec=%.2f, max_tokens=%d",
+            "[%s] Claude request success=True prompt_len=%d model=%s duration_sec=%.2f max_tokens=%d",
+            BUILD_MARKER,
             len(prompt),
             model,
             duration_s,
@@ -114,7 +129,8 @@ def claude_generate(
         duration_s = time.perf_counter() - start
         err_msg = (getattr(e, "message", None) or str(e) or "").strip().lower()
         logger.info(
-            "Claude request failed: prompt_len=%d, model=%s, duration_sec=%.2f, error=%s",
+            "[%s] Claude request success=False prompt_len=%d model=%s duration_sec=%.2f error=%s",
+            BUILD_MARKER,
             len(prompt),
             model,
             duration_s,
