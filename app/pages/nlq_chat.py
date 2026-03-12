@@ -31,6 +31,11 @@ from app.ui.formatters import fmt_percent, format_df, infer_common_formats
 from app.ui.exports import render_export_buttons
 from app.ui.guardrails import fallback_note, render_chart_or_fallback, render_empty_state
 from app.ui.theme import apply_enterprise_plotly_style, safe_render_plotly
+from app.services.intelligence_chat_service import (
+    ChatProviderError,
+    generate_chat_reply,
+    get_provider_status,
+)
 
 # Claude client: optional; must not crash app if missing or broken (cloud-safe)
 try:
@@ -52,6 +57,9 @@ CHAT_HISTORY_KEY = "nlq_chat_history"
 logger = logging.getLogger(__name__)
 BUILD_MARKER = "claude-cloud-deploy-2026-03-13"
 CLAUDE_DEBUG_KEY = "nlq_claude_debug"
+INTEL_DESK_MODEL = "claude-haiku-4-5"
+INTEL_CHAT_HISTORY_KEY = "inteldesk_chat_history_v3"
+INTEL_CHAT_INPUT_KEY = "inteldesk_chat_input_v3"
 
 
 @dataclass(frozen=True)
@@ -808,6 +816,18 @@ def _inject_nlq_page_css() -> None:
         .stButton { margin-top: 0.1rem !important; margin-bottom: 0.1rem !important; }
         /* Preset buttons lighter than primary action */
         .stButton button[kind="secondary"] { opacity: 0.92; padding: 0.25rem 0.6rem !important; }
+        /* Chat-only Intelligence Desk (v2): spacing, hierarchy, dark institutional */
+        .inteldesk-subtitle { color: #b7c5e3; font-size: 0.85rem; margin-top: -0.2rem !important; margin-bottom: 0.5rem !important; line-height: 1.35; }
+        .inteldesk-status { color: #8b9dc3; font-size: 0.78rem; margin-bottom: 0.6rem !important; font-style: normal; }
+        .inteldesk-examples-label { font-size: 0.7rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: #b7c5e3; margin-bottom: 0.35rem !important; }
+        .inteldesk-examples-row + div [data-testid="column"] .stButton button { background: rgba(23,40,77,0.6) !important; color: #e2e8f0 !important; border: 1px solid #2a3d67 !important; border-radius: 8px !important; padding: 0.5rem 0.65rem !important; font-size: 0.85rem !important; text-align: left !important; min-height: 2.5rem; }
+        .inteldesk-examples-row + div [data-testid="column"] .stButton button:hover { border-color: #4c7edb !important; background: rgba(23,40,77,0.85) !important; }
+        .inteldesk-divider { height: 1px; background: #2a3d67; margin: 0.6rem 0 0.5rem 0 !important; }
+        .inteldesk-response-placeholder { color: #8b9dc3; font-size: 0.85rem; padding: 0.75rem 0; }
+        .inteldesk-response-anchor + div[data-testid="stMarkdown"] { color: #e2e8f0; line-height: 1.55; margin-top: 0.25rem !important; }
+        .inteldesk-response-anchor + div[data-testid="stMarkdown"] p { margin-bottom: 0.65rem !important; }
+        .inteldesk-response-anchor + div[data-testid="stMarkdown"] p:last-child { margin-bottom: 0 !important; }
+        @media (max-width: 640px) { .inteldesk-examples-row + div [data-testid="column"] { min-width: 0 !important; } }
         </style>
         """,
         unsafe_allow_html=True,
@@ -815,12 +835,261 @@ def _inject_nlq_page_css() -> None:
 
 
 def render(state: FilterState, contract: dict[str, Any]) -> None:
-    """Intelligence Desk: mode, presets, input, single response area. Never crashes app."""
+    """Intelligence Desk entrypoint. Uses simplified v2 flow; legacy renderer kept disconnected."""
     try:
-        _render_intelligence_desk(state, contract)
+        _render_intelligence_desk_v2(state, contract)
     except Exception as e:
         logging.getLogger(__name__).exception("Intelligence Desk error")
         st.error("Intelligence Desk encountered an error. Other tabs are unaffected.")
+
+
+def _render_intelligence_desk_v2(state: FilterState, contract: dict[str, Any]) -> None:
+    """Chat-only Intelligence Desk."""
+    _ = contract
+    _inject_nlq_page_css()
+    st.title("Intelligence Desk")
+    st.markdown(
+        "<div class='inteldesk-subtitle'>Ask one focused question and get a concise analyst response.</div>",
+        unsafe_allow_html=True,
+    )
+    provider_status = get_provider_status()
+    st.markdown(
+        f"<div class='inteldesk-status'>{provider_status.status_text}</div>",
+        unsafe_allow_html=True,
+    )
+    st.markdown("<div class='inteldesk-examples-label'>Example prompts</div>", unsafe_allow_html=True)
+    st.markdown("<div class='inteldesk-examples-row' aria-hidden='true'></div>", unsafe_allow_html=True)
+    examples = [
+        "What are the key macro drivers for rates this week?",
+        "Summarize ETF flow trends and likely positioning implications.",
+        "What risks should a multi-asset PM monitor over the next month?",
+    ]
+    ecols = st.columns(3)
+    for idx, ex in enumerate(examples):
+        with ecols[idx]:
+            if st.button(ex, key=f"inteldesk_ex_{idx}", width="stretch"):
+                st.session_state[INTEL_CHAT_INPUT_KEY] = ex
+
+    if INTEL_CHAT_HISTORY_KEY not in st.session_state:
+        st.session_state[INTEL_CHAT_HISTORY_KEY] = []
+    if INTEL_CHAT_INPUT_KEY not in st.session_state:
+        st.session_state[INTEL_CHAT_INPUT_KEY] = ""
+
+    st.markdown("<div class='inteldesk-divider'></div>", unsafe_allow_html=True)
+    prompt = st.text_area(
+        "Message",
+        key=INTEL_CHAT_INPUT_KEY,
+        placeholder="Ask a market or portfolio intelligence question...",
+        height=100,
+    )
+    user_text = (prompt or "").strip()
+    c1, c2, _ = st.columns([1, 1, 4])
+    with c1:
+        run_clicked = st.button(
+            "Generate",
+            key="inteldesk_send_btn",
+            type="primary",
+            disabled=not user_text,
+        )
+    with c2:
+        clear_clicked = st.button("Clear chat", key="inteldesk_clear_btn")
+
+    if clear_clicked:
+        st.session_state[INTEL_CHAT_HISTORY_KEY] = []
+        st.session_state[INTEL_CHAT_INPUT_KEY] = ""
+        st.rerun()
+
+    history: list[dict[str, str]] = st.session_state.get(INTEL_CHAT_HISTORY_KEY) or []
+    response_box = st.container()
+
+    if run_clicked and user_text:
+        history.append({"role": "user", "text": user_text})
+        if not provider_status.enabled:
+            history.append({"role": "assistant", "text": "Provider unavailable."})
+        else:
+            try:
+                with st.spinner("Generating response..."):
+                    answer = generate_chat_reply(history)
+                history.append({"role": "assistant", "text": (answer or "").strip() or "No response returned."})
+            except ChatProviderError as e:
+                err_msg = (str(e) or "Request failed.").strip()
+                history.append({"role": "assistant", "text": err_msg})
+            except Exception:
+                history.append({"role": "assistant", "text": "Request failed."})
+        st.session_state[INTEL_CHAT_HISTORY_KEY] = history
+
+    history = st.session_state.get(INTEL_CHAT_HISTORY_KEY) or []
+    with response_box:
+        st.markdown("<div class='inteldesk-divider'></div>", unsafe_allow_html=True)
+        if run_clicked and not user_text:
+            st.warning("Enter a message before generating.")
+        elif not history:
+            st.markdown(
+                "<div class='inteldesk-response-placeholder'>Ask a question above or click an example to start.</div>",
+                unsafe_allow_html=True,
+            )
+        else:
+            last_assistant = next((m for m in reversed(history) if m.get("role") == "assistant"), None)
+            if last_assistant:
+                st.markdown("<div class='inteldesk-response-anchor' aria-hidden='true'></div>", unsafe_allow_html=True)
+                st.markdown(last_assistant.get("text", ""))
+            else:
+                st.markdown(
+                    "<div class='inteldesk-response-placeholder'>Awaiting response.</div>",
+                    unsafe_allow_html=True,
+                )
+
+    if history:
+        with st.expander("Conversation history", expanded=False):
+            for m in history[-12:]:
+                prefix = "You" if m.get("role") == "user" else "Desk"
+                st.markdown(f"**{prefix}:** {m.get('text', '')}")
+
+
+def _run_market_intelligence_v2(text: str, state: FilterState, contract: dict[str, Any], claude_ready: bool) -> None:
+    if not claude_ready:
+        _set_nlq_response(
+            intent="market_intelligence",
+            header="Market Intelligence - external sources",
+            subtitle="This answer reflects external context, not your internal book.",
+            error="Claude unavailable. Verified output shown.",
+            response_meta="Response type: Market Intelligence (External)",
+        )
+        _render_response_area(state, contract)
+        return
+
+    context = search_market_context(text)
+    prompt = (
+        "You are a market intelligence analyst.\n"
+        "Provide a concise external-market brief with: executive take, observed signals, implications, risks.\n\n"
+        f"User question: {text}\n\n"
+        f"External context:\n{context}"
+    )
+    try:
+        with st.spinner("Generating market brief..."):
+            answer = claude_generate(prompt=prompt, model=INTEL_DESK_MODEL)
+        _set_claude_debug(secret_detected=True, path_selected=True, request_success="yes")
+        _set_nlq_response(
+            intent="market_intelligence",
+            header="Market Intelligence - external sources",
+            subtitle="This answer reflects external context, not your internal book.",
+            narrative=answer,
+            provider_meta=f"Claude (Anthropic) | {INTEL_DESK_MODEL}",
+            response_meta="Response type: Market Intelligence (External)",
+        )
+    except Exception:
+        _set_claude_debug(secret_detected=_claude_key_configured(), path_selected=True, request_success="no")
+        _set_nlq_response(
+            intent="market_intelligence",
+            header="Market Intelligence - external sources",
+            subtitle="This answer reflects external context, not your internal book.",
+            error="Claude request failed. Verified output shown.",
+            response_meta="Response type: Market Intelligence (External)",
+        )
+    _render_response_area(state, contract)
+
+
+def _run_verified_data_v2(text: str, state: FilterState, contract: dict[str, Any]) -> None:
+    try:
+        metric_reg = load_metric_registry()
+        dim_reg = load_dim_registry()
+    except (FileNotFoundError, ValueError) as e:
+        _set_nlq_response(
+            intent="data_question",
+            header="Verified Data Result",
+            subtitle="Calculated from your internal filtered dataset.",
+            error=f"Registries failed to load: {e}",
+        )
+        _render_response_area(state, contract)
+        return
+
+    gateway_dict = filter_state_to_gateway_dict(state)
+    value_catalog = _load_value_catalog(gateway_dict, ROOT)
+    parsed = parse_nlq(text, metric_reg, dim_reg, value_catalog, today=date.today())
+    if isinstance(parsed, ParseError):
+        _set_nlq_response(
+            intent="data_question",
+            header="Verified Data Result",
+            subtitle="Calculated from your internal filtered dataset.",
+            error=parsed.message or "Unable to parse this as a governed query.",
+        )
+        _render_response_area(state, contract)
+        return
+    qs = parsed
+
+    try:
+        df = run_query(Q_TICKER_MONTHLY, gateway_dict, root=ROOT)
+    except Exception:
+        df = run_query(Q_CHANNEL_MONTHLY, gateway_dict, root=ROOT)
+
+    allowlist = {
+        "columns": {
+            "channel",
+            "sub_channel",
+            "product_ticker",
+            "src_country",
+            "country",
+            "segment",
+            "sub_segment",
+            "month_end",
+            "metric",
+            "begin_aum",
+            "end_aum",
+            "nnb",
+            "nnf",
+        },
+        "pii_columns": set(),
+        "max_rows": 5000,
+    }
+    with st.spinner("Running verified query..."):
+        result, svc_error = _execute_data_query_service(
+            qs=qs,
+            df=df,
+            metric_reg=metric_reg,
+            dim_reg=dim_reg,
+            allowlist=allowlist,
+        )
+    if svc_error:
+        _set_nlq_response(
+            intent="data_question",
+            header="Verified Data Result",
+            subtitle="Calculated from your internal filtered dataset.",
+            error=svc_error,
+        )
+        _render_response_area(state, contract)
+        return
+
+    numbers = result.numbers or {}
+    bullets = build_deterministic_summary(qs, result)
+    narrative_payload = {
+        "query": text,
+        "queryspec": qs.model_dump(mode="json"),
+        "numbers": numbers,
+        "meta": result.meta or {},
+        "deterministic_summary": bullets,
+        "top_rows_preview": (result.data.head(5).to_dict(orient="records") if isinstance(result.data, pd.DataFrame) and not result.data.empty else []),
+    }
+    narrative, narrative_warning = _get_data_narrative(narrative_payload)
+    narrative_text = ""
+    if bullets:
+        narrative_text += "\n".join([f"- {b}" for b in bullets]) + "\n\n"
+    if (narrative or "").strip():
+        narrative_text += narrative.strip()
+        placeholder_fallback = None
+    else:
+        narrative_text += "Verified output is shown below."
+        placeholder_fallback = narrative_warning or "Narrative unavailable. Verified output below."
+
+    _set_nlq_response(
+        intent="data_question",
+        header="Verified Data Result",
+        subtitle="Calculated from your internal filtered dataset.",
+        narrative=narrative_text,
+        chart_result=result,
+        placeholder_fallback=placeholder_fallback,
+        response_meta="Response type: Internal Data (Verified Python query)",
+    )
+    _render_response_area(state, contract)
 
 
 def _render_intelligence_desk(state: FilterState, contract: dict[str, Any]) -> None:
