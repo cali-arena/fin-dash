@@ -57,6 +57,7 @@ data/agg/*.parquet
 # Secrets and env
 .env
 .env.local
+.streamlit/secrets.toml
 *.pem
 
 # OS

@@ -6,6 +6,7 @@ Loaded by app/main.py via PAGE_RENDERERS["nlq_chat"] = render_nlq_chat — this 
 """
 from __future__ import annotations
 
+import logging
 import re
 from calendar import monthrange
 from dataclasses import dataclass
@@ -30,13 +31,12 @@ from app.ui.exports import render_export_buttons
 from app.ui.guardrails import fallback_note, render_chart_or_fallback, render_empty_state
 from app.ui.theme import apply_enterprise_plotly_style, safe_render_plotly
 
-# LLM client: optional; must not crash app if missing or broken (cloud-safe)
+# Claude client: optional; must not crash app if missing or broken (cloud-safe)
 try:
-    from app.services.llm_client import LLMError, generate_data_narrative, generate_market_intelligence
+    from app.services.claude_client import ClaudeError, claude_generate
 except Exception:
-    generate_market_intelligence = None  # type: ignore[assignment]
-    generate_data_narrative = None  # type: ignore[assignment]
-    LLMError = Exception  # type: ignore[misc, assignment]
+    ClaudeError = Exception  # type: ignore[misc, assignment]
+    claude_generate = None  # type: ignore[assignment]
 
 ROOT = Path(__file__).resolve().parents[2]
 KNOWN_ETF_TICKERS = frozenset({"AGG", "HYG", "TIP", "MUB", "MBB", "IUSB", "SUB"})
@@ -493,29 +493,43 @@ PLACEHOLDER_MARKET = "What is the latest outlook for ETF inflows across major as
 
 NLQ_RESPONSE_KEY = "nlq_response"
 
-# LLM settings: session state only; never persist key to disk
-LLM_PROVIDER_KEY = "nlq_llm_provider"
+# LLM settings: Claude model in session state; API key from Streamlit secrets (no UI input)
 LLM_MODEL_KEY = "nlq_llm_model"
-LLM_API_KEY_KEY = "nlq_llm_api_key"
 
 CLAUDE_MODELS = ["claude-3-5-sonnet-latest", "claude-3-7-sonnet-latest"]
-OPENAI_MODELS = ["gpt-4.1-mini", "gpt-4.1"]
+
+
+def _claude_key_configured() -> bool:
+    try:
+        key = (st.secrets.get("ANTHROPIC_API_KEY") or "").strip()
+        return bool(key and key != "your-key-here")
+    except Exception:
+        return False
 
 
 def _get_data_narrative(payload: dict[str, Any]) -> str:
-    """Data Questions narrative using only UI session-state key; no env/secrets. Returns '' if no key or not Claude."""
-    provider = st.session_state.get(LLM_PROVIDER_KEY) or ""
-    if "Claude" not in provider:
-        return ""
-    api_key = (st.session_state.get(LLM_API_KEY_KEY) or "").strip()
-    if not api_key or api_key == "your-key-here":
+    """Data Questions narrative using Claude; key from Streamlit secrets (ANTHROPIC_API_KEY)."""
+    if not _claude_key_configured():
         return ""
     model = (st.session_state.get(LLM_MODEL_KEY) or "").strip()
     if not model:
         return ""
-    if generate_data_narrative is None:
+    if claude_generate is None:
         return ""
-    return generate_data_narrative(api_key, model, payload)
+    prompt = (
+        "You are a concise analyst.\n"
+        "Use only the numbers and facts in the payload.\n"
+        "Do not invent or infer numbers. Do not perform calculations.\n\n"
+        "Payload:\n"
+        f"{payload}"
+    )
+    try:
+        with st.spinner("Generating analysis..."):
+            return claude_generate(prompt=prompt, model=model, max_tokens=512)
+    except (ClaudeError, RuntimeError):
+        return ""
+    except Exception:
+        return ""
 
 
 def _render_prompt_presets(is_data_mode: bool) -> None:
@@ -617,6 +631,7 @@ def _render_response_area(state: FilterState, contract: dict[str, Any]) -> None:
 
     narrative = (resp.get("narrative") or "").strip()
     if narrative:
+        st.markdown("<div class='nlq-narrative-anchor' aria-hidden='true'></div>", unsafe_allow_html=True)
         st.markdown(narrative)
     provider_meta = resp.get("provider_meta")
     if provider_meta:
@@ -676,6 +691,10 @@ def _inject_nlq_page_css() -> None:
         .nlq-divider { height: 1px; background: #2a3d67; margin: 0.35rem 0 0.5rem 0 !important; }
         .nlq-response-header { font-size: 1.1rem !important; margin-bottom: 0.15rem !important; margin-top: 0.25rem !important; }
         .nlq-response-meta { color: #9fb0d3; font-size: 0.78rem; margin: -0.1rem 0 0.35rem 0; }
+        /* LLM narrative: dark dashboard style, multi-paragraph spacing, no raw text layout break */
+        .nlq-narrative-anchor + div[data-testid="stMarkdown"] { color: #e2e8f0; line-height: 1.55; margin-top: 0.25rem !important; }
+        .nlq-narrative-anchor + div[data-testid="stMarkdown"] p { margin-bottom: 0.65rem !important; }
+        .nlq-narrative-anchor + div[data-testid="stMarkdown"] p:last-child { margin-bottom: 0 !important; }
         .nlq-empty-state { border: 1px solid #2a3d67; border-radius: 8px; padding: 0.5rem 0.65rem; background: rgba(17,29,58,0.5); font-size: 0.88rem; color: #b7c5e3; margin: 0.25rem 0 0.4rem 0; }
         .nlq-empty-state .nlq-empty-title { color: #f8fbff; font-weight: 600; font-size: 0.9rem; margin-bottom: 0.15rem; }
         /* Tighten widget spacing for this page */
@@ -695,8 +714,8 @@ def render(state: FilterState, contract: dict[str, Any]) -> None:
     try:
         _render_intelligence_desk(state, contract)
     except Exception as e:
+        logging.getLogger(__name__).exception("Intelligence Desk error")
         st.error("Intelligence Desk encountered an error. Other tabs are unaffected.")
-        st.exception(e)
 
 
 def _render_intelligence_desk(state: FilterState, contract: dict[str, Any]) -> None:
@@ -734,64 +753,29 @@ def _render_intelligence_desk(state: FilterState, contract: dict[str, Any]) -> N
         )
     is_data_mode = mode == "Data Questions"
 
-    # --- 3b. LLM settings (session state only; key never persisted to disk) ---
-    if LLM_PROVIDER_KEY not in st.session_state:
-        st.session_state[LLM_PROVIDER_KEY] = "Claude (Anthropic)"
+    # --- 3b. LLM settings: model in session state; API key from Streamlit secrets (no UI input) ---
     if LLM_MODEL_KEY not in st.session_state:
-        st.session_state[LLM_MODEL_KEY] = "claude-3-5-sonnet-latest"
-    if LLM_API_KEY_KEY not in st.session_state:
-        st.session_state[LLM_API_KEY_KEY] = ""
+        st.session_state[LLM_MODEL_KEY] = "claude-3-7-sonnet-latest"
 
     with st.expander("LLM settings (for Market Intelligence)", expanded=False):
-        _provider_default_idx = 1 if st.session_state.get(LLM_PROVIDER_KEY) == "OpenAI" else 0
-        provider_ui = st.radio(
-            "Provider",
-            ["Claude (Anthropic)", "OpenAI"],
-            key="nlq_llm_provider_ui",
-            horizontal=True,
-            index=_provider_default_idx,
+        has_key = _claude_key_configured()
+        st.caption(
+            "Credential: from Streamlit secrets (ANTHROPIC_API_KEY). "
+            f"Status: {'Configured' if has_key else 'Not set'}"
         )
-        api_key_ui = st.text_input(
-            "API key (optional to replace current key)",
-            key="nlq_llm_api_key_input",
-            type="password",
-            placeholder="Enter your API key (not stored on disk)",
-            label_visibility="visible",
-        )
-        has_saved_key = bool((st.session_state.get(LLM_API_KEY_KEY) or "").strip())
-        st.caption(f"Credential status: {'Configured in session' if has_saved_key else 'Not configured'}")
         saved_model = st.session_state.get(LLM_MODEL_KEY) or ""
-        if provider_ui == "Claude (Anthropic)":
-            model_list = CLAUDE_MODELS
-            model_index = model_list.index(saved_model) if saved_model in model_list else 0
-            model_ui = st.selectbox(
-                "Model",
-                model_list,
-                key="nlq_llm_model_claude",
-                index=model_index,
-            )
-        else:
-            model_list = OPENAI_MODELS
-            model_index = model_list.index(saved_model) if saved_model in model_list else 0
-            model_ui = st.selectbox(
-                "Model",
-                model_list,
-                key="nlq_llm_model_openai",
-                index=model_index,
-            )
-        if st.button("Apply", key="nlq_llm_apply"):
-            st.session_state[LLM_PROVIDER_KEY] = provider_ui
-            st.session_state[LLM_MODEL_KEY] = model_ui
-            typed_key = (api_key_ui or "").strip()
-            if typed_key:
-                st.session_state[LLM_API_KEY_KEY] = typed_key
-            st.success("Settings applied. Key is stored in session only.")
-            st.rerun()
+        model_index = CLAUDE_MODELS.index(saved_model) if saved_model in CLAUDE_MODELS else 0
+        model_ui = st.selectbox(
+            "Model",
+            CLAUDE_MODELS,
+            key="nlq_llm_model_claude",
+            index=model_index,
+        )
+        st.session_state[LLM_MODEL_KEY] = model_ui
 
-    active_provider = st.session_state.get(LLM_PROVIDER_KEY) or "Claude (Anthropic)"
     active_model = st.session_state.get(LLM_MODEL_KEY) or ""
-    active_key = (st.session_state.get(LLM_API_KEY_KEY) or "").strip()
-    market_ready = bool(active_model and active_key and active_key != "your-key-here")
+    active_key = _claude_key_configured()
+    market_ready = bool(active_model and active_key)
 
     # --- 4. Current mode card (compact) ---
     if is_data_mode:
@@ -815,7 +799,7 @@ def _render_intelligence_desk(state: FilterState, contract: dict[str, Any]) -> N
         st.caption("Mode status: Internal deterministic analytics path.")
     else:
         readiness = "Ready" if market_ready else "Setup required"
-        st.caption(f"Mode status: {readiness} | Provider: {active_provider} | Model: {active_model or 'Not selected'}")
+        st.caption(f"Mode status: {readiness} | Provider: Claude (Anthropic) | Model: {active_model or 'Not selected'}")
 
     # --- 5. Active scope line (subtle) ---
     _render_active_scope(state)
@@ -871,74 +855,89 @@ def _render_intelligence_desk(state: FilterState, contract: dict[str, Any]) -> N
     else:
         route_to_market = not is_data_mode
 
-    # --- Market Intelligence path: UI-configured LLM (Claude or OpenAI); label answer as external ---
+    # --- Market Intelligence path: Claude via Streamlit secrets; label answer as external ---
     if route_to_market:
-        provider = st.session_state.get(LLM_PROVIDER_KEY) or "Claude (Anthropic)"
         model = st.session_state.get(LLM_MODEL_KEY) or ""
-        api_key = st.session_state.get(LLM_API_KEY_KEY) or ""
+        has_key = _claude_key_configured()
 
-        if not api_key or api_key == "your-key-here" or not model:
+        if not has_key or not model:
             _set_nlq_response(
                 intent="market_intelligence",
                 header="Market Intelligence - external sources",
                 subtitle="This answer reflects external context, not your internal book.",
-                error=(
-                    "LLM settings are required for Market Intelligence. "
-                    "Open LLM settings, enter a valid API key, select a model, and click Apply."
-                ),
+                error="Claude API key not configured in Streamlit secrets.",
                 response_meta="Response type: Market Intelligence (External)",
             )
             _render_response_area(state, contract)
             _render_compact_history()
             return
 
-        if generate_market_intelligence is None:
+        if claude_generate is None:
             _set_nlq_response(
                 intent="market_intelligence",
-                header="Market Intelligence — external sources",
+                header="Market Intelligence - external sources",
                 subtitle="This answer reflects external context, not your internal book.",
-                error="LLM client is not available. Install app.services.llm_client dependencies.",
+                error="Claude client is not available. Install app.services.claude_client dependencies.",
                 response_meta="Response type: Market Intelligence (External)",
             )
             _render_response_area(state, contract)
             _render_compact_history()
             return
 
-        provider_code = "claude" if "Claude" in provider else "openai"
         context = search_market_context(text)
+        prompt = (
+            "You are a market intelligence analyst.\n\n"
+            "Rules:\n"
+            "- Keep the response concise and executive-friendly (3-5 short paragraphs max).\n"
+            "- Clearly separate what is observable/cited from what is inference.\n"
+            "- Do not express false certainty; hedge when evidence is limited.\n"
+            "- This answer is external/market-oriented only; do not reference internal portfolio data.\n"
+            "- If context is thin, say so explicitly and label the answer as general-market inference.\n"
+            "- Use this structure:\n"
+            "  1) Executive take\n"
+            "  2) What is observable now\n"
+            "  3) Implications for flows/positioning\n"
+            "  4) Risks and watch-items\n\n"
+            f"User question: {text}\n\n"
+            "Return a compact institutional note. Keep the answer explicitly external-market focused."
+        )
+        if (context or "").strip():
+            prompt += f"\n\nContext from external sources:\n{context.strip()}"
 
         try:
-            with st.spinner("Generating response..."):
-                answer, meta_label = generate_market_intelligence(
-                    provider=provider_code,
-                    model=model,
-                    api_key=api_key,
-                    prompt=text,
-                    context=context,
-                )
+            with st.spinner("Generating analysis..."):
+                answer = claude_generate(prompt=prompt, model=model)
             _set_nlq_response(
                 intent="market_intelligence",
-                header="Market Intelligence — external sources",
+                header="Market Intelligence - external sources",
                 subtitle="This answer reflects external context, not your internal book.",
                 narrative=answer,
-                provider_meta=meta_label,
-                response_meta=f"Response type: Market Intelligence (External) | Provider: {provider} | Model: {model}",
+                provider_meta=f"Claude (Anthropic) | {model}",
+                response_meta=f"Response type: Market Intelligence (External) | Provider: Claude (Anthropic) | Model: {model}",
             )
-        except LLMError as e:
+        except ClaudeError as e:
             _set_nlq_response(
                 intent="market_intelligence",
-                header="Market Intelligence — external sources",
+                header="Market Intelligence - external sources",
                 subtitle="This answer reflects external context, not your internal book.",
-                error=e.message,
-                response_meta=f"Response type: Market Intelligence (External) | Provider: {provider} | Model: {model}",
+                error=getattr(e, "message", str(e)) or "Claude could not complete the request. Please try again.",
+                response_meta=f"Response type: Market Intelligence (External) | Provider: Claude (Anthropic) | Model: {model}",
             )
-        except Exception as e:
+        except RuntimeError:
             _set_nlq_response(
                 intent="market_intelligence",
-                header="Market Intelligence — external sources",
+                header="Market Intelligence - external sources",
+                subtitle="This answer reflects external context, not your internal book.",
+                error="Claude API key not configured in Streamlit secrets.",
+                response_meta=f"Response type: Market Intelligence (External) | Provider: Claude (Anthropic) | Model: {model}",
+            )
+        except Exception:
+            _set_nlq_response(
+                intent="market_intelligence",
+                header="Market Intelligence - external sources",
                 subtitle="This answer reflects external context, not your internal book.",
                 error="An unexpected error occurred. Please try again.",
-                response_meta=f"Response type: Market Intelligence (External) | Provider: {provider} | Model: {model}",
+                response_meta=f"Response type: Market Intelligence (External) | Provider: Claude (Anthropic) | Model: {model}",
             )
         _render_response_area(state, contract)
         _render_compact_history()
