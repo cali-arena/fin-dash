@@ -6,7 +6,6 @@ from __future__ import annotations
 import logging
 import time
 
-from anthropic import Anthropic
 import streamlit as st
 
 logger = logging.getLogger(__name__)
@@ -36,7 +35,12 @@ def has_claude_api_key() -> bool:
         return False
 
 
-def get_claude_client() -> Anthropic:
+def get_claude_client():
+    try:
+        from anthropic import Anthropic
+    except Exception as e:
+        logger.warning("Claude SDK import failed: %s", type(e).__name__)
+        raise ClaudeError("Claude SDK is unavailable in this deployment.") from e
     api_key = (st.secrets.get("ANTHROPIC_API_KEY") or "").strip()
     if not api_key or api_key == "your-key-here":
         raise ClaudeError("Claude is not configured.")

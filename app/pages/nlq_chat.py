@@ -504,16 +504,32 @@ DEFAULT_CLAUDE_MODEL = "claude-3-7-sonnet-latest"
 
 def _claude_key_configured() -> bool:
     if has_claude_api_key is None:
-        return False
+        try:
+            key = (st.secrets.get("ANTHROPIC_API_KEY") or "").strip()
+            configured = bool(key and key != "your-key-here")
+            logger.info("DEBUG Claude secret_detected=%s (fallback)", "yes" if configured else "no")
+            return configured
+        except Exception:
+            logger.info("DEBUG Claude secret_detected=no (fallback failed)")
+            return False
     try:
-        return bool(has_claude_api_key())
+        configured = bool(has_claude_api_key())
+        logger.info("DEBUG Claude secret_detected=%s", "yes" if configured else "no")
+        return configured
     except Exception:
         return False
 
 
 def _get_data_narrative(payload: dict[str, Any]) -> tuple[str, str | None]:
     """Data Questions narrative + fallback warning. Uses Claude when configured."""
-    if not _claude_key_configured():
+    secret_detected = _claude_key_configured()
+    path_selected = bool(secret_detected and claude_generate is not None)
+    logger.info(
+        "DEBUG Claude data_path secret_detected=%s path_selected=%s request_success=n/a",
+        "yes" if secret_detected else "no",
+        "yes" if path_selected else "no",
+    )
+    if not secret_detected:
         logger.info("Data narrative routing: Claude unavailable (secret missing)")
         return "", "Narrative unavailable. Verified output below."
     if claude_generate is None:
@@ -532,12 +548,15 @@ def _get_data_narrative(payload: dict[str, Any]) -> tuple[str, str | None]:
         with st.spinner("Generating narrative..."):
             narrative = claude_generate(prompt=prompt, model=model, max_tokens=512)
         logger.info("Data narrative Claude request succeeded")
+        logger.info("DEBUG Claude data_path secret_detected=yes path_selected=yes request_success=yes")
         return narrative, None
     except (ClaudeError, RuntimeError):
         logger.warning("Data narrative Claude request failed")
+        logger.info("DEBUG Claude data_path secret_detected=yes path_selected=yes request_success=no")
         return "", "Narrative unavailable. Verified output below."
     except Exception:
         logger.exception("Data narrative Claude request failed unexpectedly")
+        logger.info("DEBUG Claude data_path secret_detected=yes path_selected=yes request_success=no")
         return "", "Narrative unavailable. Verified output below."
 
 
@@ -880,13 +899,18 @@ def _render_intelligence_desk(state: FilterState, contract: dict[str, Any]) -> N
         model = (st.session_state.get(LLM_MODEL_KEY) or DEFAULT_CLAUDE_MODEL).strip() or DEFAULT_CLAUDE_MODEL
         has_key = _claude_key_configured()
         logger.info("Market routing selected Claude (secret_detected=%s, model=%s)", has_key, model)
+        logger.info(
+            "DEBUG Claude market_path secret_detected=%s path_selected=%s request_success=n/a",
+            "yes" if has_key else "no",
+            "yes" if (has_key and claude_generate is not None) else "no",
+        )
 
         if not has_key:
             _set_nlq_response(
                 intent="market_intelligence",
                 header="Market Intelligence - external sources",
                 subtitle="This answer reflects external context, not your internal book.",
-                error="Claude unavailable. Configure the app to enable Market Intelligence.",
+                error="Claude narrative unavailable: ANTHROPIC_API_KEY is not configured in Streamlit secrets.",
                 response_meta="Response type: Market Intelligence (External)",
             )
             _render_response_area(state, contract)
@@ -929,6 +953,7 @@ def _render_intelligence_desk(state: FilterState, contract: dict[str, Any]) -> N
             with st.spinner("Generating market brief..."):
                 answer = claude_generate(prompt=prompt, model=model)
             logger.info("Market Claude request succeeded (model=%s)", model)
+            logger.info("DEBUG Claude market_path secret_detected=yes path_selected=yes request_success=yes")
             _set_nlq_response(
                 intent="market_intelligence",
                 header="Market Intelligence - external sources",
@@ -939,6 +964,7 @@ def _render_intelligence_desk(state: FilterState, contract: dict[str, Any]) -> N
             )
         except ClaudeError:
             logger.warning("Market Claude request failed")
+            logger.info("DEBUG Claude market_path secret_detected=yes path_selected=yes request_success=no")
             _set_nlq_response(
                 intent="market_intelligence",
                 header="Market Intelligence - external sources",
@@ -948,6 +974,7 @@ def _render_intelligence_desk(state: FilterState, contract: dict[str, Any]) -> N
             )
         except RuntimeError:
             logger.warning("Market Claude request failed: RuntimeError")
+            logger.info("DEBUG Claude market_path secret_detected=yes path_selected=yes request_success=no")
             _set_nlq_response(
                 intent="market_intelligence",
                 header="Market Intelligence - external sources",
@@ -956,6 +983,7 @@ def _render_intelligence_desk(state: FilterState, contract: dict[str, Any]) -> N
                 response_meta=f"Response type: Market Intelligence (External) | Provider: Claude (Anthropic) | Model: {model}",
             )
         except Exception:
+            logger.info("DEBUG Claude market_path secret_detected=yes path_selected=yes request_success=no")
             _set_nlq_response(
                 intent="market_intelligence",
                 header="Market Intelligence - external sources",
