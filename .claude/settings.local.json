@@ -1,0 +1,24 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git -C /c/Users/lucas/FINANCE_DASH ls-files --others --ignored --exclude-standard | head -60)",
+      "Bash(git -C /c/Users/lucas/FINANCE_DASH ls-files | grep -E \"\\\\.\\(parquet|csv|xlsx|xls|json|duckdb\\)$\" | head -60)",
+      "Bash(git -C /c/Users/lucas/FINANCE_DASH log --oneline -5 -- analytics.duckdb)",
+      "Bash(ls -la /c/Users/lucas/FINANCE_DASH/analytics.duckdb && git -C /c/Users/lucas/FINANCE_DASH show HEAD:analytics.duckdb | wc -c 2>/dev/null || echo \"NOT IN GIT HEAD\")",
+      "Bash(git -C /c/Users/lucas/FINANCE_DASH log --oneline -8 -- analytics.duckdb data/agg/firm_monthly.parquet)",
+      "Bash(git -C /c/Users/lucas/FINANCE_DASH log --oneline -8)",
+      "Bash(git -C /c/Users/lucas/FINANCE_DASH show a85c672 --stat | head -30)",
+      "Bash(git -C /c/Users/lucas/FINANCE_DASH show 371cc9c --stat | head -30)",
+      "Bash(grep -rn \"APP_DATA_BACKEND\\\\|DUCKDB_PATH\\\\|analytics_fixed\" /c/Users/lucas/FINANCE_DASH/ --include=\"*.toml\" --include=\"*.env\" --include=\"*.yml\" --include=\"*.yaml\" --include=\"*.cfg\" 2>/dev/null | grep -v \"__pycache__\")",
+      "Bash(grep -rn \"analytics_fixed\\\\|analytics_fixed.duckdb\" /c/Users/lucas/FINANCE_DASH/ --include=\"*.py\" --include=\"*.md\" --include=\"*.yml\" 2>/dev/null | grep -v \"__pycache__\" | grep -v \".git\")",
+      "Bash(git -C /c/Users/lucas/FINANCE_DASH remote -v && git -C /c/Users/lucas/FINANCE_DASH log --oneline origin/main..HEAD)",
+      "Bash(grep \"analytics_fixed\\\\|fixed.duckdb\" /c/Users/lucas/FINANCE_DASH/.gitignore || echo \"NOT in .gitignore\"\ngit -C /c/Users/lucas/FINANCE_DASH status analytics_fixed.duckdb)",
+      "Bash(git -C /c/Users/lucas/FINANCE_DASH ls-files analytics_fixed.duckdb && echo \"TRACKED\" || echo \"UNTRACKED\"\ngit -C /c/Users/lucas/FINANCE_DASH status --short analytics_fixed.duckdb)",
+      "Bash(git -C /c/Users/lucas/FINANCE_DASH ls-files analytics_fixed.duckdb\ngit -C /c/Users/lucas/FINANCE_DASH log --oneline -- analytics_fixed.duckdb)",
+      "Bash(git -C /c/Users/lucas/FINANCE_DASH log --oneline -- analytics_fixed.duckdb 2>&1\ngit -C /c/Users/lucas/FINANCE_DASH ls-files --error-unmatch analytics_fixed.duckdb 2>&1 || echo \"NOT TRACKED\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('app/pages/visualisations.py'\\).read\\(\\)\\); print\\('Syntax OK'\\)\")",
+      "Bash(find /c/Users/lucas/FINANCE_DASH/data -type f \\\\\\( -name \"*.csv\" -o -name \"*.parquet\" -o -name \"*.xlsx\" -o -name \"*.json\" \\\\\\) 2>/dev/null | head -20)",
+      "Bash(cd C:/Users/lucas/FINANCE_DASH && python -c \"\nimport ast, sys\n\nfiles = [\n    'app/metrics/shared_payload.py',\n    'app/config/tab1_defaults.py', \n    'app/pages/visualisations.py',\n]\n\nfor f in files:\n    with open\\(f\\) as fh:\n        src = fh.read\\(\\)\n    ast.parse\\(src\\)\n    print\\(f'SYNTAX OK: {f}'\\)\n\" 2>&1)"
+    ]
+  }
+}
