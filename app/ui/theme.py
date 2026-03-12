@@ -122,12 +122,16 @@ def inject_global_theme_css() -> None:
         }
         .stTabs [data-baseweb="tab-list"] {
             gap: 0.3rem;
+            flex-wrap: wrap;
+            row-gap: 0.45rem;
         }
         .stTabs [data-baseweb="tab"] {
             background: #111d3a !important;
             border: 1px solid #2a3d67 !important;
             border-radius: 10px !important;
             color: #b7c5e3 !important;
+            white-space: normal !important;
+            min-height: 2.2rem;
         }
         .stTabs [aria-selected="true"] {
             background: #17284d !important;
@@ -290,6 +294,53 @@ def inject_global_theme_css() -> None:
         }
         [data-testid="stSelectbox"] [aria-expanded="true"] {
             border-color: #4c7edb !important;
+        }
+        /* Responsive global controls and tab-1 filter grid (scoped via anchor markers). */
+        .global-controls-grid-anchor,
+        .tab1-filter-grid-anchor {
+            display: block;
+            height: 0;
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+        }
+        div[data-testid="stVerticalBlock"]:has(.global-controls-grid-anchor) {
+            margin-bottom: 0.5rem;
+        }
+        div[data-testid="stVerticalBlock"]:has(.global-controls-grid-anchor) div[data-testid="stHorizontalBlock"] {
+            flex-wrap: wrap;
+            row-gap: 0.7rem;
+        }
+        div[data-testid="stVerticalBlock"]:has(.global-controls-grid-anchor) div[data-testid="column"] {
+            min-width: 260px;
+            flex: 1 1 260px;
+        }
+        div[data-testid="stVerticalBlock"]:has(.tab1-filter-grid-anchor) {
+            padding: 0.5rem 0 0.75rem 0.6rem;
+            border-left: 2px solid #2a3d67;
+            margin-bottom: 0.5rem;
+        }
+        div[data-testid="stVerticalBlock"]:has(.tab1-filter-grid-anchor) div[data-testid="stHorizontalBlock"] {
+            flex-wrap: wrap;
+            row-gap: 0.7rem;
+        }
+        div[data-testid="stVerticalBlock"]:has(.tab1-filter-grid-anchor) div[data-testid="column"] {
+            min-width: 220px;
+            flex: 1 1 220px;
+        }
+        div[data-testid="stVerticalBlock"]:has(.global-controls-grid-anchor) [data-testid="stWidgetLabel"],
+        div[data-testid="stVerticalBlock"]:has(.tab1-filter-grid-anchor) [data-testid="stWidgetLabel"] {
+            margin-bottom: 0.15rem !important;
+        }
+        div[data-testid="stVerticalBlock"]:has(.global-controls-grid-anchor) [data-testid="stWidgetLabel"] p,
+        div[data-testid="stVerticalBlock"]:has(.tab1-filter-grid-anchor) [data-testid="stWidgetLabel"] p {
+            white-space: normal !important;
+            line-height: 1.25 !important;
+            max-width: 100%;
+        }
+        div[data-testid="stVerticalBlock"]:has(.global-controls-grid-anchor) [data-testid="stCaptionContainer"],
+        div[data-testid="stVerticalBlock"]:has(.tab1-filter-grid-anchor) [data-testid="stCaptionContainer"] {
+            margin-top: 0.1rem;
         }
         </style>
         """,

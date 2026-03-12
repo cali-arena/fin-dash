@@ -1647,33 +1647,39 @@ def render(state: FilterState, contract: dict[str, Any]) -> None:
         add = dim_lookup["sales_focus"] == sel_sf
         sf_mask = (subseg_mask & add) if subseg_mask is not None else add
 
-    c1, c2, c3, c4, c5, c6 = st.columns(6)
-    with c1:
-        # Channel = grouped channel (ibp_channel level)
-        _selectbox_with_all("Channel (grouped)", "tab1_filter_channel", _dl_opts(None, "channel_group"))
-    with c2:
-        # Sub-Channel = std_channel_name
-        _selectbox_with_all("Sub-Channel (standard)", "tab1_filter_sub_channel", _dl_opts(ch_mask, "sub_channel"))
-    with c3:
-        _selectbox_with_all("Country", "tab1_filter_country", _dl_opts(sub_mask, "country"))
-    with c4:
-        # Sub-Segment (Segment filter removed — source is always Fixed Income)
-        _selectbox_with_all("Sub-Segment", "tab1_filter_sub_segment", _dl_opts(country_mask, "sub_segment"))
-    with c5:
-        # Sales Focus (uswa_sales_focus_2020)
-        _selectbox_with_all("Sales Focus", "tab1_filter_sales_focus", _dl_opts(subseg_mask, "sales_focus"))
-    with c6:
-        # Ticker — narrowed by all upstream filters
-        ticker_period_source = _apply_period(
-            selector_frames["ticker_monthly"] if not selector_frames["ticker_monthly"].empty else source_df,
-            period,
-        )
-        ticker_opts = ticker_period_source["product_ticker"].astype(str).tolist() if "product_ticker" in ticker_period_source.columns else []
-        # Further narrow tickers by sales_focus if set
-        if sel_sf not in (None, "", "All") and not dim_lookup.empty:
-            allowed_tickers = set(dim_lookup[dim_lookup["sales_focus"] == sel_sf]["product_ticker"].astype(str).unique())
-            ticker_opts = [t for t in ticker_opts if t in allowed_tickers]
-        _selectbox_with_all("Product Ticker", "tab1_filter_ticker", ticker_opts)
+    filter_grid = st.container()
+    with filter_grid:
+        st.markdown("<div class='tab1-filter-grid-anchor'></div>", unsafe_allow_html=True)
+        row_1_col_1, row_1_col_2, row_1_col_3 = st.columns(3, gap="medium")
+        with row_1_col_1:
+            # Channel = grouped channel (ibp_channel level)
+            _selectbox_with_all("Channel (grouped)", "tab1_filter_channel", _dl_opts(None, "channel_group"))
+        with row_1_col_2:
+            # Sub-Channel = std_channel_name
+            _selectbox_with_all("Sub-Channel (standard)", "tab1_filter_sub_channel", _dl_opts(ch_mask, "sub_channel"))
+        with row_1_col_3:
+            _selectbox_with_all("Country", "tab1_filter_country", _dl_opts(sub_mask, "country"))
+
+        row_2_col_1, row_2_col_2, row_2_col_3 = st.columns(3, gap="medium")
+        with row_2_col_1:
+            # Sub-Segment (Segment filter removed - source is always Fixed Income)
+            _selectbox_with_all("Sub-Segment", "tab1_filter_sub_segment", _dl_opts(country_mask, "sub_segment"))
+        with row_2_col_2:
+            # Sales Focus (uswa_sales_focus_2020)
+            _selectbox_with_all("Sales Focus", "tab1_filter_sales_focus", _dl_opts(subseg_mask, "sales_focus"))
+        with row_2_col_3:
+            # Ticker - narrowed by all upstream filters
+            ticker_period_source = _apply_period(
+                selector_frames["ticker_monthly"] if not selector_frames["ticker_monthly"].empty else source_df,
+                period,
+            )
+            ticker_opts = ticker_period_source["product_ticker"].astype(str).tolist() if "product_ticker" in ticker_period_source.columns else []
+            # Further narrow tickers by sales_focus if set
+            if sel_sf not in (None, "", "All") and not dim_lookup.empty:
+                allowed_tickers = set(dim_lookup[dim_lookup["sales_focus"] == sel_sf]["product_ticker"].astype(str).unique())
+                ticker_opts = [t for t in ticker_opts if t in allowed_tickers]
+            _selectbox_with_all("Product Ticker", "tab1_filter_ticker", ticker_opts)
+
 
     tab1 = _tab1_snapshot()
 

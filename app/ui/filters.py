@@ -36,30 +36,35 @@ def render_global_filters() -> None:
         end_val = max(min_date, min(end_val, max_date))
     kwargs_start: dict = {"min_value": min_date, "max_value": max_date} if min_date is not None and max_date is not None else {}
     kwargs_end: dict = {"min_value": min_date, "max_value": max_date} if min_date is not None and max_date is not None else {}
-    c1, c2, c3, c4 = st.columns(4)
-    with c1:
-        start = st.date_input(
-            "Reporting period from",
-            value=start_val,
-            key="ui_date_start",
-            format="YYYY/MM/DD",
-            help="Start date for the reporting period (YYYY/MM/DD).",
-            **kwargs_start,
-        )
-    with c2:
-        end = st.date_input(
-            "Reporting period to",
-            value=end_val,
-            key="ui_date_end",
-            format="YYYY/MM/DD",
-            help="End date for the reporting period (YYYY/MM/DD).",
-            **kwargs_end,
-        )
-    with c3:
-        unit_opts = ["units", "thousands", "millions"]
-        unit = st.selectbox("Display unit", options=unit_opts, index=unit_opts.index(state.unit or "units"))
-    with c4:
-        st.caption("Currency: USD")
+    top_controls = st.container()
+    with top_controls:
+        st.markdown("<div class='global-controls-grid-anchor'></div>", unsafe_allow_html=True)
+        row_1_col_1, row_1_col_2 = st.columns(2, gap="medium")
+        with row_1_col_1:
+            start = st.date_input(
+                "Reporting period from",
+                value=start_val,
+                key="ui_date_start",
+                format="YYYY/MM/DD",
+                help="Start date for the reporting period (YYYY/MM/DD).",
+                **kwargs_start,
+            )
+        with row_1_col_2:
+            end = st.date_input(
+                "Reporting period to",
+                value=end_val,
+                key="ui_date_end",
+                format="YYYY/MM/DD",
+                help="End date for the reporting period (YYYY/MM/DD).",
+                **kwargs_end,
+            )
+
+        row_2_col_1, row_2_col_2 = st.columns(2, gap="medium")
+        with row_2_col_1:
+            unit_opts = ["units", "thousands", "millions"]
+            unit = st.selectbox("Display unit", options=unit_opts, index=unit_opts.index(state.unit or "units"))
+        with row_2_col_2:
+            st.caption("Currency: USD")
 
     changed = (
         start.isoformat() != state.date_start
