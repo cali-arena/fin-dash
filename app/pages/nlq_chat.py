@@ -33,14 +33,16 @@ from app.ui.theme import apply_enterprise_plotly_style, safe_render_plotly
 
 # Claude client: optional; must not crash app if missing or broken (cloud-safe)
 try:
-    from app.services.claude_client import ClaudeError, claude_generate
+    from app.services.claude_client import ClaudeError, claude_generate, has_claude_api_key
 except Exception:
     ClaudeError = Exception  # type: ignore[misc, assignment]
     claude_generate = None  # type: ignore[assignment]
+    has_claude_api_key = None  # type: ignore[assignment]
 
 ROOT = Path(__file__).resolve().parents[2]
 KNOWN_ETF_TICKERS = frozenset({"AGG", "HYG", "TIP", "MUB", "MBB", "IUSB", "SUB"})
 CHAT_HISTORY_KEY = "nlq_chat_history"
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -497,25 +499,27 @@ NLQ_RESPONSE_KEY = "nlq_response"
 LLM_MODEL_KEY = "nlq_llm_model"
 
 CLAUDE_MODELS = ["claude-3-5-sonnet-latest", "claude-3-7-sonnet-latest"]
+DEFAULT_CLAUDE_MODEL = "claude-3-7-sonnet-latest"
 
 
 def _claude_key_configured() -> bool:
+    if has_claude_api_key is None:
+        return False
     try:
-        key = (st.secrets.get("ANTHROPIC_API_KEY") or "").strip()
-        return bool(key and key != "your-key-here")
+        return bool(has_claude_api_key())
     except Exception:
         return False
 
 
-def _get_data_narrative(payload: dict[str, Any]) -> str:
-    """Data Questions narrative using Claude; key from Streamlit secrets (ANTHROPIC_API_KEY)."""
+def _get_data_narrative(payload: dict[str, Any]) -> tuple[str, str | None]:
+    """Data Questions narrative + fallback warning. Uses Claude when configured."""
     if not _claude_key_configured():
-        return ""
-    model = (st.session_state.get(LLM_MODEL_KEY) or "").strip()
-    if not model:
-        return ""
+        logger.info("Data narrative routing: Claude unavailable (secret missing)")
+        return "", "Narrative unavailable. Verified output below."
     if claude_generate is None:
-        return ""
+        logger.warning("Data narrative routing: Claude unavailable (client import failed)")
+        return "", "Narrative unavailable. Verified output below."
+    model = (st.session_state.get(LLM_MODEL_KEY) or DEFAULT_CLAUDE_MODEL).strip() or DEFAULT_CLAUDE_MODEL
     prompt = (
         "You are a concise analyst.\n"
         "Use only the numbers and facts in the payload.\n"
@@ -524,12 +528,17 @@ def _get_data_narrative(payload: dict[str, Any]) -> str:
         f"{payload}"
     )
     try:
-        with st.spinner("Generating analysis..."):
-            return claude_generate(prompt=prompt, model=model, max_tokens=512)
+        logger.info("Data narrative routing selected Claude (model=%s)", model)
+        with st.spinner("Generating narrative..."):
+            narrative = claude_generate(prompt=prompt, model=model, max_tokens=512)
+        logger.info("Data narrative Claude request succeeded")
+        return narrative, None
     except (ClaudeError, RuntimeError):
-        return ""
+        logger.warning("Data narrative Claude request failed")
+        return "", "Narrative unavailable. Verified output below."
     except Exception:
-        return ""
+        logger.exception("Data narrative Claude request failed unexpectedly")
+        return "", "Narrative unavailable. Verified output below."
 
 
 def _render_prompt_presets(is_data_mode: bool) -> None:
@@ -625,12 +634,21 @@ def _render_response_area(state: FilterState, contract: dict[str, Any]) -> None:
         st.error(error)
         return
 
-    placeholder_fallback = resp.get("placeholder_fallback")
+    placeholder_fallback = (resp.get("placeholder_fallback") or "").strip()
     if placeholder_fallback:
-        st.info(placeholder_fallback)
+        st.markdown(
+            f"<div class='nlq-fallback-note'>{placeholder_fallback}</div>",
+            unsafe_allow_html=True,
+        )
 
     narrative = (resp.get("narrative") or "").strip()
     if narrative:
+        intent = (resp.get("intent") or "").strip()
+        label = "Claude Narrative" if intent == "data_question" else "Claude Market Brief"
+        st.markdown(
+            f"<div class='nlq-narrative-section'><span class='nlq-narrative-label'>{label}</span></div>",
+            unsafe_allow_html=True,
+        )
         st.markdown("<div class='nlq-narrative-anchor' aria-hidden='true'></div>", unsafe_allow_html=True)
         st.markdown(narrative)
     provider_meta = resp.get("provider_meta")
@@ -691,10 +709,13 @@ def _inject_nlq_page_css() -> None:
         .nlq-divider { height: 1px; background: #2a3d67; margin: 0.35rem 0 0.5rem 0 !important; }
         .nlq-response-header { font-size: 1.1rem !important; margin-bottom: 0.15rem !important; margin-top: 0.25rem !important; }
         .nlq-response-meta { color: #9fb0d3; font-size: 0.78rem; margin: -0.1rem 0 0.35rem 0; }
-        /* LLM narrative: dark dashboard style, multi-paragraph spacing, no raw text layout break */
-        .nlq-narrative-anchor + div[data-testid="stMarkdown"] { color: #e2e8f0; line-height: 1.55; margin-top: 0.25rem !important; }
+        /* Narrative: clean section, dark dashboard style, multi-paragraph */
+        .nlq-narrative-section { border-left: 3px solid #4c7edb; padding: 0.35rem 0 0.15rem 0.5rem; margin: 0.4rem 0 0.25rem 0; background: rgba(17,29,58,0.35); border-radius: 0 6px 6px 0; }
+        .nlq-narrative-label { color: #9fb0d3; font-size: 0.74rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; }
+        .nlq-narrative-anchor + div[data-testid="stMarkdown"] { color: #e2e8f0; line-height: 1.55; margin-top: 0.2rem !important; padding-left: 0.1rem; }
         .nlq-narrative-anchor + div[data-testid="stMarkdown"] p { margin-bottom: 0.65rem !important; }
         .nlq-narrative-anchor + div[data-testid="stMarkdown"] p:last-child { margin-bottom: 0 !important; }
+        .nlq-fallback-note { color: #8b9dc3; font-size: 0.8rem; margin: 0.2rem 0 0.35rem 0; font-style: italic; }
         .nlq-empty-state { border: 1px solid #2a3d67; border-radius: 8px; padding: 0.5rem 0.65rem; background: rgba(17,29,58,0.5); font-size: 0.88rem; color: #b7c5e3; margin: 0.25rem 0 0.4rem 0; }
         .nlq-empty-state .nlq-empty-title { color: #f8fbff; font-weight: 600; font-size: 0.9rem; margin-bottom: 0.15rem; }
         /* Tighten widget spacing for this page */
@@ -759,10 +780,7 @@ def _render_intelligence_desk(state: FilterState, contract: dict[str, Any]) -> N
 
     with st.expander("LLM settings (for Market Intelligence)", expanded=False):
         has_key = _claude_key_configured()
-        st.caption(
-            "Credential: from Streamlit secrets (ANTHROPIC_API_KEY). "
-            f"Status: {'Configured' if has_key else 'Not set'}"
-        )
+        st.caption("Claude: Enabled" if has_key else "Claude: Unavailable")
         saved_model = st.session_state.get(LLM_MODEL_KEY) or ""
         model_index = CLAUDE_MODELS.index(saved_model) if saved_model in CLAUDE_MODELS else 0
         model_ui = st.selectbox(
@@ -797,9 +815,11 @@ def _render_intelligence_desk(state: FilterState, contract: dict[str, Any]) -> N
 
     if is_data_mode:
         st.caption("Mode status: Internal deterministic analytics path.")
+        st.caption(f"Claude: {'Enabled' if active_key else 'Unavailable'}")
     else:
         readiness = "Ready" if market_ready else "Setup required"
-        st.caption(f"Mode status: {readiness} | Provider: Claude (Anthropic) | Model: {active_model or 'Not selected'}")
+        st.caption(f"Mode status: {readiness} | Claude model: {active_model or 'Not selected'}")
+        st.caption(f"Claude: {'Enabled' if active_key else 'Unavailable'}")
 
     # --- 5. Active scope line (subtle) ---
     _render_active_scope(state)
@@ -857,15 +877,16 @@ def _render_intelligence_desk(state: FilterState, contract: dict[str, Any]) -> N
 
     # --- Market Intelligence path: Claude via Streamlit secrets; label answer as external ---
     if route_to_market:
-        model = st.session_state.get(LLM_MODEL_KEY) or ""
+        model = (st.session_state.get(LLM_MODEL_KEY) or DEFAULT_CLAUDE_MODEL).strip() or DEFAULT_CLAUDE_MODEL
         has_key = _claude_key_configured()
+        logger.info("Market routing selected Claude (secret_detected=%s, model=%s)", has_key, model)
 
-        if not has_key or not model:
+        if not has_key:
             _set_nlq_response(
                 intent="market_intelligence",
                 header="Market Intelligence - external sources",
                 subtitle="This answer reflects external context, not your internal book.",
-                error="Claude API key not configured in Streamlit secrets.",
+                error="Claude unavailable. Configure the app to enable Market Intelligence.",
                 response_meta="Response type: Market Intelligence (External)",
             )
             _render_response_area(state, contract)
@@ -877,7 +898,7 @@ def _render_intelligence_desk(state: FilterState, contract: dict[str, Any]) -> N
                 intent="market_intelligence",
                 header="Market Intelligence - external sources",
                 subtitle="This answer reflects external context, not your internal book.",
-                error="Claude client is not available. Install app.services.claude_client dependencies.",
+                error="Claude unavailable in this deployment.",
                 response_meta="Response type: Market Intelligence (External)",
             )
             _render_response_area(state, contract)
@@ -905,8 +926,9 @@ def _render_intelligence_desk(state: FilterState, contract: dict[str, Any]) -> N
             prompt += f"\n\nContext from external sources:\n{context.strip()}"
 
         try:
-            with st.spinner("Generating analysis..."):
+            with st.spinner("Generating market brief..."):
                 answer = claude_generate(prompt=prompt, model=model)
+            logger.info("Market Claude request succeeded (model=%s)", model)
             _set_nlq_response(
                 intent="market_intelligence",
                 header="Market Intelligence - external sources",
@@ -915,20 +937,22 @@ def _render_intelligence_desk(state: FilterState, contract: dict[str, Any]) -> N
                 provider_meta=f"Claude (Anthropic) | {model}",
                 response_meta=f"Response type: Market Intelligence (External) | Provider: Claude (Anthropic) | Model: {model}",
             )
-        except ClaudeError as e:
+        except ClaudeError:
+            logger.warning("Market Claude request failed")
             _set_nlq_response(
                 intent="market_intelligence",
                 header="Market Intelligence - external sources",
                 subtitle="This answer reflects external context, not your internal book.",
-                error=getattr(e, "message", str(e)) or "Claude could not complete the request. Please try again.",
+                error="Claude unavailable. Please try again or check app configuration.",
                 response_meta=f"Response type: Market Intelligence (External) | Provider: Claude (Anthropic) | Model: {model}",
             )
         except RuntimeError:
+            logger.warning("Market Claude request failed: RuntimeError")
             _set_nlq_response(
                 intent="market_intelligence",
                 header="Market Intelligence - external sources",
                 subtitle="This answer reflects external context, not your internal book.",
-                error="Claude API key not configured in Streamlit secrets.",
+                error="Claude unavailable. Please try again.",
                 response_meta=f"Response type: Market Intelligence (External) | Provider: Claude (Anthropic) | Model: {model}",
             )
         except Exception:
@@ -1096,7 +1120,7 @@ def _render_intelligence_desk(state: FilterState, contract: dict[str, Any]) -> N
             },
             "top_rows_preview": out_df.to_dict(orient="records"),
         }
-        narrative = _get_data_narrative(narrative_payload)
+        narrative, narrative_warning = _get_data_narrative(narrative_payload)
         if not (narrative or "").strip():
             narrative = (
                 "For the selected month, the difference between AUM growth and organic growth is shown in the verified table. "
@@ -1109,6 +1133,7 @@ def _render_intelligence_desk(state: FilterState, contract: dict[str, Any]) -> N
             subtitle="Calculated from your internal filtered dataset.",
             narrative=full_narrative,
             table_df=format_df(out_df, infer_common_formats(out_df)),
+            placeholder_fallback=narrative_warning,
         )
         _render_response_area(state, contract)
         _render_compact_history()
@@ -1185,7 +1210,7 @@ def _render_intelligence_desk(state: FilterState, contract: dict[str, Any]) -> N
             "numbers": {"nnb_median": nnb_med, "fee_yield_median": fy_med, "flagged_count": int(len(flagged))},
             "top_rows_preview": show.head(10).to_dict(orient="records"),
         }
-        narrative = _get_data_narrative(narrative_payload)
+        narrative, narrative_warning = _get_data_narrative(narrative_payload)
         if not (narrative or "").strip():
             narrative = f"Detected {len(flagged)} ticker(s) with high NNB and low fee yield versus peer medians in the selected window."
         full_narrative = summary_md + "\n\n" + narrative
@@ -1195,6 +1220,7 @@ def _render_intelligence_desk(state: FilterState, contract: dict[str, Any]) -> N
             subtitle="Calculated from your internal filtered dataset.",
             narrative=full_narrative,
             table_df=format_df(show, infer_common_formats(show)),
+            placeholder_fallback=narrative_warning,
         )
         _render_response_area(state, contract)
         _render_compact_history()
@@ -1256,7 +1282,7 @@ def _render_intelligence_desk(state: FilterState, contract: dict[str, Any]) -> N
         "deterministic_summary": bullets,
         "top_rows_preview": (result.data.head(5).to_dict(orient="records") if isinstance(result.data, pd.DataFrame) and not result.data.empty else []),
     }
-    narrative = _get_data_narrative(narrative_payload)
+    narrative, narrative_warning = _get_data_narrative(narrative_payload)
     narrative_text = headline
     if bullets:
         narrative_text += "\n".join([f"- {b}" for b in bullets]) + "\n\n"
@@ -1265,7 +1291,7 @@ def _render_intelligence_desk(state: FilterState, contract: dict[str, Any]) -> N
         placeholder_fallback = None
     else:
         narrative_text += "Verified output is shown below."
-        placeholder_fallback = "Add API key in LLM settings (Claude) to include narrative over verified outputs."
+        placeholder_fallback = narrative_warning or "Narrative unavailable. Verified output below."
 
     _set_nlq_response(
         intent="data_question",
