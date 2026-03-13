@@ -429,6 +429,8 @@ def _selectbox_with_all(label: str, key: str, options: list[str]) -> str:
     opts = ["All"] + sorted(dict.fromkeys(clean_opts))
     current = st.session_state.get(key, "All")
     if current not in opts:
+        # Flush stale value so the widget renders "All", not the now-invalid selection.
+        st.session_state[key] = "All"
         current = "All"
     return st.selectbox(label, opts, index=opts.index(current), key=key)
 
@@ -1721,7 +1723,7 @@ def render(state: FilterState, contract: dict[str, Any]) -> None:
     # Option lists: primary source = selector_frames (actual loaded data) so all real values appear.
     _FRAME_DIM_COLS: dict[str, tuple[str, ...]] = {
         "channel_group": ("channel_group", "channel", "channel_final", "channel_standard"),
-        "sub_channel": ("sub_channel",),
+        "sub_channel": ("channel_final", "sub_channel"),  # channel_final = std_channel_name in channel_monthly
         "country": ("country", "src_country", "geo"),
         "sales_focus": ("sales_focus", "uswa_sales_focus_2020"),
         "sub_segment": ("sub_segment", "segment"),
@@ -1768,49 +1770,60 @@ def render(state: FilterState, contract: dict[str, Any]) -> None:
     sel_subseg = tab1.get("tab1_filter_sub_segment", TAB1_DEFAULT_SUB_SEGMENT)
     sel_sf = tab1.get("tab1_filter_sales_focus", TAB1_DEFAULT_SALES_FOCUS)
 
-    # Build narrowed masks for cascade
-    ch_mask = (dim_lookup["channel_group"] == sel_ch) if (sel_ch not in (None, "", "All") and not dim_lookup.empty) else None
-    sub_mask = ch_mask
-    if sel_sub not in (None, "", "All") and not dim_lookup.empty:
-        add = dim_lookup["sub_channel"] == sel_sub
-        sub_mask = (ch_mask & add) if ch_mask is not None else add
-    country_mask = sub_mask
-    if sel_country not in (None, "", "All") and not dim_lookup.empty:
-        add = dim_lookup["country"] == sel_country
-        country_mask = (sub_mask & add) if sub_mask is not None else add
-    subseg_mask = country_mask
-    if sel_subseg not in (None, "", "All") and not dim_lookup.empty:
-        add = dim_lookup["sub_segment"] == sel_subseg
-        subseg_mask = (country_mask & add) if country_mask is not None else add
-    sf_mask = subseg_mask
-    if sel_sf not in (None, "", "All") and not dim_lookup.empty:
-        add = dim_lookup["sales_focus"] == sel_sf
-        sf_mask = (subseg_mask & add) if subseg_mask is not None else add
+    # Sibling-based cascade: each dropdown's options are narrowed by ALL other active filters,
+    # excluding the dimension itself.  This gives true bidirectional narrowing — selecting
+    # Sub-Channel narrows Channel, selecting Country narrows Sub-Channel, etc.
+    def _dim_mask(col: str, val: str) -> "pd.Series | None":
+        if val in (None, "", "All") or dim_lookup.empty or col not in dim_lookup.columns:
+            return None
+        return dim_lookup[col] == val
+
+    def _and_masks(*masks: "pd.Series | None") -> "pd.Series | None":
+        result = None
+        for m in masks:
+            if m is None:
+                continue
+            result = m if result is None else (result & m)
+        return result
+
+    m_ch      = _dim_mask("channel_group", sel_ch)
+    m_sub     = _dim_mask("sub_channel",   sel_sub)
+    m_country = _dim_mask("country",       sel_country)
+    m_subseg  = _dim_mask("sub_segment",   sel_subseg)
+    m_sf      = _dim_mask("sales_focus",   sel_sf)
+
+    # Per-dropdown mask = intersection of all sibling selections (exclude self)
+    ch_mask      = _and_masks(m_sub, m_country, m_subseg, m_sf)
+    sub_mask     = _and_masks(m_ch,  m_country, m_subseg, m_sf)
+    country_mask = _and_masks(m_ch,  m_sub,     m_subseg, m_sf)
+    subseg_mask  = _and_masks(m_ch,  m_sub,     m_country, m_sf)
+    sf_mask      = _and_masks(m_ch,  m_sub,     m_country, m_subseg)
 
     filter_grid = st.container()
     with filter_grid:
         st.markdown("<div class='tab1-filter-grid-anchor'></div>", unsafe_allow_html=True)
         row_1_col_1, row_1_col_2, row_1_col_3 = st.columns(3, gap="medium")
         with row_1_col_1:
-            # Channel = grouped channel (ibp_channel level); options from actual data + lookup
-            channel_opts = _filter_opts(_opts_from_frames("channel_group"), _dl_opts(None, "channel_group"), None)
+            # Channel: narrowed by sub_channel + country + sub_segment + sales_focus siblings
+            channel_opts = _filter_opts(_opts_from_frames("channel_group"), _dl_opts(ch_mask, "channel_group"), ch_mask)
             _selectbox_with_all("Channel (grouped)", "tab1_filter_channel", channel_opts)
         with row_1_col_2:
-            # Sub-Channel = std_channel_name; cascade by channel when selected
-            sub_opts = _filter_opts(_opts_from_frames("sub_channel"), _dl_opts(ch_mask, "sub_channel"), ch_mask)
+            # Sub-Channel: narrowed by channel + country + sub_segment + sales_focus siblings
+            sub_opts = _filter_opts(_opts_from_frames("sub_channel"), _dl_opts(sub_mask, "sub_channel"), sub_mask)
             _selectbox_with_all("Sub-Channel (standard)", "tab1_filter_sub_channel", sub_opts)
         with row_1_col_3:
-            country_opts = _filter_opts(_opts_from_frames("country"), _dl_opts(sub_mask, "country"), sub_mask)
+            # Country: narrowed by channel + sub_channel + sub_segment + sales_focus siblings
+            country_opts = _filter_opts(_opts_from_frames("country"), _dl_opts(country_mask, "country"), country_mask)
             _selectbox_with_all("Country", "tab1_filter_country", country_opts)
 
         row_2_col_1, row_2_col_2, row_2_col_3 = st.columns(3, gap="medium")
         with row_2_col_1:
-            # Sub-Segment (Segment filter removed - source is always Fixed Income)
-            subseg_opts = _filter_opts(_opts_from_frames("sub_segment"), _dl_opts(country_mask, "sub_segment"), country_mask)
+            # Sub-Segment: narrowed by channel + sub_channel + country + sales_focus siblings
+            subseg_opts = _filter_opts(_opts_from_frames("sub_segment"), _dl_opts(subseg_mask, "sub_segment"), subseg_mask)
             _selectbox_with_all("Sub-Segment", "tab1_filter_sub_segment", subseg_opts)
         with row_2_col_2:
-            # Sales Focus (uswa_sales_focus_2020)
-            sf_opts = _filter_opts(_opts_from_frames("sales_focus"), _dl_opts(subseg_mask, "sales_focus"), subseg_mask)
+            # Sales Focus: narrowed by channel + sub_channel + country + sub_segment siblings
+            sf_opts = _filter_opts(_opts_from_frames("sales_focus"), _dl_opts(sf_mask, "sales_focus"), sf_mask)
             _selectbox_with_all("Sales Focus", "tab1_filter_sales_focus", sf_opts)
         with row_2_col_3:
             # Product Ticker: from period-scoped data + frames; narrow by sales_focus when set
@@ -1844,12 +1857,12 @@ def render(state: FilterState, contract: dict[str, Any]) -> None:
                         if col in dim_lookup.columns:
                             uniq = dim_lookup[col].dropna().astype(str).unique()
                             st.write(f"- **{col}**: {sorted(uniq)[:20]}{' ...' if len(uniq) > 20 else ''}")
-                st.write("**Filter options:**")
-                channel_opts = _filter_opts(_opts_from_frames("channel_group"), _dl_opts(None, "channel_group"), None)
-                sub_opts = _filter_opts(_opts_from_frames("sub_channel"), _dl_opts(ch_mask, "sub_channel"), ch_mask)
-                country_opts = _filter_opts(_opts_from_frames("country"), _dl_opts(sub_mask, "country"), sub_mask)
-                subseg_opts = _filter_opts(_opts_from_frames("sub_segment"), _dl_opts(country_mask, "sub_segment"), country_mask)
-                sf_opts = _filter_opts(_opts_from_frames("sales_focus"), _dl_opts(subseg_mask, "sales_focus"), subseg_mask)
+                st.write("**Filter options (sibling-narrowed):**")
+                channel_opts = _filter_opts(_opts_from_frames("channel_group"), _dl_opts(ch_mask, "channel_group"), ch_mask)
+                sub_opts = _filter_opts(_opts_from_frames("sub_channel"), _dl_opts(sub_mask, "sub_channel"), sub_mask)
+                country_opts = _filter_opts(_opts_from_frames("country"), _dl_opts(country_mask, "country"), country_mask)
+                subseg_opts = _filter_opts(_opts_from_frames("sub_segment"), _dl_opts(subseg_mask, "sub_segment"), subseg_mask)
+                sf_opts = _filter_opts(_opts_from_frames("sales_focus"), _dl_opts(sf_mask, "sales_focus"), sf_mask)
                 st.write(f"- Channel (grouped): {channel_opts}")
                 st.write(f"- Sub-Channel (standard): {sub_opts}")
                 st.write(f"- Country: {country_opts}")

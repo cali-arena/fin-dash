@@ -3285,9 +3285,13 @@ def load_dim_lookup(root: Path | None = None) -> pd.DataFrame:
 DIM_LOOKUP_COLUMNS = ("product_ticker", "channel_group", "sub_channel", "country", "sales_focus", "sub_segment")
 
 # Frame column names that map to dim_lookup columns when building from selector frames (normalize_base_frame output).
+# Note: channel_monthly.parquet stores std_channel_name (sub_channel level) in its "channel" column.
+# After normalize_base_frame, this becomes channel_final.  The "sub_channel" col is always "Unassigned"
+# in all normalized agg frames because none carry a channel_l2 / Sub-Channel source column.
+# Listing channel_final before sub_channel ensures we pick up the real sub_channel values from channel_monthly.
 _DIM_FRAME_ALIASES: dict[str, tuple[str, ...]] = {
     "channel_group": ("channel_group", "channel", "channel_final", "channel_standard"),
-    "sub_channel": ("sub_channel",),
+    "sub_channel": ("channel_final", "sub_channel"),  # channel_final = std_channel_name in agg frames
     "country": ("country", "src_country", "geo"),
     "sales_focus": ("sales_focus", "uswa_sales_focus_2020"),
     "sub_segment": ("sub_segment", "segment"),
