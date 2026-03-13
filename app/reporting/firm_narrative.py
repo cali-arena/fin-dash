@@ -30,9 +30,9 @@ def is_valid_number(x: Any) -> bool:
 
 
 def fmt_currency(x: Any) -> str:
-    """Format as currency (K/M/B). Uses app.ui.formatters."""
-    from app.ui.formatters import fmt_currency as _fmt_currency
-    return _fmt_currency(float(x) if is_valid_number(x) else None, unit="auto", decimals=2)
+    """Format as currency (K/M/B). Same as dashboard KPI formatter."""
+    from app.ui.formatters import fmt_currency_kpi
+    return fmt_currency_kpi(float(x) if is_valid_number(x) else None, decimals=2)
 
 
 def fmt_percent(x: Any) -> str:

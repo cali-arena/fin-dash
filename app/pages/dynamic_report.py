@@ -45,7 +45,7 @@ from app.reporting.report_engine import (
 )
 from app.state import FilterState, get_filter_state
 from app.ui.exports import render_export_buttons
-from app.ui.formatters import fmt_currency, fmt_percent, format_df, infer_common_formats
+from app.ui.formatters import fmt_currency_kpi, fmt_percent, format_df, infer_common_formats
 from app.ui.guardrails import render_empty_state, render_error_state, render_timeout_state
 
 try:
@@ -79,11 +79,11 @@ def _tab1_snapshot_for_parity() -> dict[str, Any]:
 
 
 def _overview_bullets_from_payload(payload: dict[str, Any], *, period: str) -> list[str]:
-    end_aum = fmt_currency(payload.get("end_aum"), unit="auto", decimals=2)
-    begin_aum = fmt_currency(payload.get("begin_aum"), unit="auto", decimals=2)
-    nnb = fmt_currency(payload.get("nnb"), unit="auto", decimals=2)
-    nnf = fmt_currency(payload.get("nnf"), unit="auto", decimals=2)
-    market = fmt_currency(payload.get("market_pnl"), unit="auto", decimals=2)
+    end_aum = fmt_currency_kpi(payload.get("end_aum"))
+    begin_aum = fmt_currency_kpi(payload.get("begin_aum"))
+    nnb = fmt_currency_kpi(payload.get("nnb"))
+    nnf = fmt_currency_kpi(payload.get("nnf"))
+    market = fmt_currency_kpi(payload.get("market_pnl"))
     ogr = fmt_percent(payload.get("ogr"), decimals=2, signed=True)
     market_rate = fmt_percent(payload.get("market_impact"), decimals=2, signed=True)
     fee_yield = fmt_percent(payload.get("fee_yield"), decimals=2, signed=True)
@@ -162,7 +162,7 @@ def _anomaly_bullets_from_shared(anomalies_df: pd.DataFrame | None) -> list[str]
         return fallback
     direction = "positive" if val_cur >= 0 else "negative"
     return [
-        f"Largest flow anomaly occurred in {entity_name} with {direction} NNB of {fmt_currency(val_cur, unit='auto', decimals=2)}.",
+        f"Largest flow anomaly occurred in {entity_name} with {direction} NNB of {fmt_currency_kpi(val_cur)}.",
         f"Anomaly intensity (|z-score|) peaked at {abs(zval):.2f} in the selected period.",
     ]
 
@@ -452,12 +452,12 @@ def render(state: FilterState, contract: dict[str, Any]) -> None:
     st.markdown("#### Executive Overview")
     st.markdown("<div class='section-subtitle'>Growth direction, revenue quality, and market contribution.</div>", unsafe_allow_html=True)
     c1, c2, c3, c4, c5, c6, c7 = st.columns(7)
-    c1.metric("Selected Scope End AUM", fmt_currency(kpi.get("end_aum"), unit="auto", decimals=2))
-    c2.metric("Begin AUM", fmt_currency(kpi.get("begin_aum"), unit="auto", decimals=2))
-    c3.metric("Net New Business", fmt_currency(kpi.get("nnb"), unit="auto", decimals=2))
-    c4.metric("Net New Flow", fmt_currency(kpi.get("nnf"), unit="auto", decimals=2))
+    c1.metric("Selected Scope End AUM", fmt_currency_kpi(kpi.get("end_aum")))
+    c2.metric("Begin AUM", fmt_currency_kpi(kpi.get("begin_aum")))
+    c3.metric("Net New Business", fmt_currency_kpi(kpi.get("nnb")))
+    c4.metric("Net New Flow", fmt_currency_kpi(kpi.get("nnf")))
     c5.metric("Organic Growth", fmt_percent(kpi.get("ogr"), decimals=2, signed=True))
-    c6.metric("Market Impact", fmt_currency(kpi.get("market_pnl"), unit="auto", decimals=2))
+    c6.metric("Market Impact", fmt_currency_kpi(kpi.get("market_pnl")))
     c7.metric("Fee Yield", fmt_percent(kpi.get("fee_yield"), decimals=2, signed=True))
     st.caption(f"Report slice: **{scope_label}**. All values are from the same filtered monthly source as Executive Dashboard KPIs.")
     overview_list = _overview_bullets_from_payload(kpi, period=period)

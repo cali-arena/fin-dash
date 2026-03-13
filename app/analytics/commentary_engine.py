@@ -6,7 +6,7 @@ from typing import Any
 
 import pandas as pd
 
-from app.ui.formatters import fmt_currency, fmt_percent
+from app.ui.formatters import fmt_currency_kpi, fmt_percent
 
 
 @dataclass(frozen=True)
@@ -26,11 +26,8 @@ def _num(x: Any) -> float | None:
 
 
 def _fmt_money(x: Any) -> str:
-    v = _num(x)
-    if v is None:
-        return "-"
-    core = fmt_currency(abs(v), unit="auto", decimals=2)
-    return f"-${core}" if v < 0 else f"${core}"
+    """Same KPI currency formatter as Executive Dashboard and Investment Commentary."""
+    return fmt_currency_kpi(x, decimals=2)
 
 
 def _fmt_pct(x: Any) -> str:

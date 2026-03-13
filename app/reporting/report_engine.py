@@ -20,7 +20,7 @@ from app.reporting.nlg_templates import (
     select_geo_commentary as nlg_geo,
     select_recommendations as nlg_recommendations,
 )
-from app.ui.formatters import fmt_currency, fmt_number, fmt_percent
+from app.ui.formatters import fmt_currency, fmt_currency_kpi, fmt_number, fmt_percent
 
 # --- Constants (template / rule thresholds) ------------------------------------
 
@@ -35,8 +35,8 @@ MAX_BULLETS = rules.MAX_BULLETS
 
 
 def _fmt_money(x: float | None) -> str:
-    """Currency for report bullets (full integer with comma)."""
-    return fmt_currency(x, unit=" ", decimals=0)
+    """Currency for report bullets; same B/M/K formatting as Executive Dashboard KPIs."""
+    return fmt_currency_kpi(x, decimals=2)
 
 
 def _fmt_pct(x: float | None) -> str:

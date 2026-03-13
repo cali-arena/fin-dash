@@ -129,6 +129,7 @@ def _stats_from_gateway(root: Path) -> dict[str, Any]:
     empty = {"row_count": 0, "min_date": None, "max_date": None, "sum_end_aum": 0.0, "sum_nnb": 0.0, "sum_nnf": 0.0}
     global _GATEWAY_STATS_WARNED
     try:
+        import pandas as pd  # ensure pd in scope for this path (avoids "name 'pd' is not defined" in some runtimes)
         from app.data.data_gateway import Q_FIRM_MONTHLY, run_query
 
         if root is None:

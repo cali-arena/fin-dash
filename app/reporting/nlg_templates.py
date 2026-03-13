@@ -515,9 +515,9 @@ def _safe_first_row(df: Any) -> dict[str, Any]:
 
 def generate_executive_overview(metrics: dict[str, Any]) -> list[str]:
     """Executive overview bullets from snapshot metrics. Deterministic; no LLM."""
-    from app.ui.formatters import fmt_currency, fmt_percent
+    from app.ui.formatters import fmt_currency_kpi, fmt_percent
     def _m(x: Any) -> str:
-        return fmt_currency(x, unit=" ", decimals=0)
+        return fmt_currency_kpi(x, decimals=2)
     def _p(x: Any) -> str:
         return fmt_percent(x, decimals=2, signed=False)
     return select_executive_overview(metrics or {}, _m, _p)
@@ -525,9 +525,9 @@ def generate_executive_overview(metrics: dict[str, Any]) -> list[str]:
 
 def generate_channel_analysis(channel_df: Any, comparisons: dict[str, Any]) -> list[str]:
     """Channel commentary bullets from channel rank table and snapshot. Caller must pass bullets_from_rules from rules; here we add NLG layer only."""
-    from app.ui.formatters import fmt_currency, fmt_percent
+    from app.ui.formatters import fmt_currency_kpi, fmt_percent
     def _m(x: Any) -> str:
-        return fmt_currency(x, unit=" ", decimals=0)
+        return fmt_currency_kpi(x, decimals=2)
     def _p(x: Any) -> str:
         return fmt_percent(x, decimals=2, signed=False)
     return select_channel_commentary([], channel_df, comparisons or {}, _m, _p)
@@ -535,9 +535,9 @@ def generate_channel_analysis(channel_df: Any, comparisons: dict[str, Any]) -> l
 
 def generate_product_analysis(product_df: Any, flags: Any = None) -> list[str]:
     """Product commentary bullets from product/ticker rank table. flags unused; reserved for future pricing/underutilized flags."""
-    from app.ui.formatters import fmt_currency, fmt_percent
+    from app.ui.formatters import fmt_currency_kpi, fmt_percent
     def _m(x: Any) -> str:
-        return fmt_currency(x, unit=" ", decimals=0)
+        return fmt_currency_kpi(x, decimals=2)
     def _p(x: Any) -> str:
         return fmt_percent(x, decimals=2, signed=False)
     return select_product_commentary([], product_df, _m, _p)

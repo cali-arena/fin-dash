@@ -36,7 +36,7 @@ from app.metrics.metric_contract import (
 from app.metrics.shared_payload import build_metric_payload, normalize_base_frame
 from app.state import FilterState
 from app.ui.exports import render_export_buttons
-from app.ui.formatters import fmt_bps, fmt_currency, format_df, infer_common_formats
+from app.ui.formatters import fmt_bps, fmt_currency, fmt_currency_kpi, format_df, infer_common_formats
 from app.ui.theme import PALETTE, apply_enterprise_plotly_style, safe_render_plotly
 from app.viz.tab1_filter_pipeline import (
     LABEL_ALL,
@@ -309,13 +309,8 @@ class NarrativeWordingService:
 
 
 def _fmt_currency(x: Any) -> str:
-    try:
-        v = float(x)
-    except (TypeError, ValueError):
-        return "-"
-    if pd.isna(v):
-        return "-"
-    return fmt_currency(v, unit="auto", decimals=2)
+    """KPI/card currency; same formatter as Investment Commentary tab."""
+    return fmt_currency_kpi(x, decimals=2)
 
 
 def _fmt_pct(x: Any) -> str:

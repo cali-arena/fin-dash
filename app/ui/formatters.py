@@ -48,6 +48,11 @@ def fmt_currency(x: float | None, unit: str = "auto", decimals: int = 2, symbol:
     return f"{symbol}{v:,.{decimals}f}"
 
 
+def fmt_currency_kpi(x: float | None, decimals: int = 2, symbol: str = "$") -> str:
+    """Canonical KPI/card currency formatter for dashboard and commentary. Same B/M/K abbreviation everywhere."""
+    return fmt_currency(x, unit="auto", decimals=decimals, symbol=symbol)
+
+
 def fmt_percent(x: float | None, decimals: int = 2, signed: bool = False) -> str:
     if x is None or (isinstance(x, float) and pd.isna(x)):
         return NA_STR
@@ -121,7 +126,7 @@ def infer_common_formats(df: pd.DataFrame) -> dict[str, Callable[[Any], str]]:
     for c in df.columns:
         key = str(c).strip().lower().replace(" ", "_").replace("-", "_")
         if key in CURRENCY_COLUMNS:
-            result[c] = lambda x: fmt_currency(x, unit="auto", decimals=2)
+            result[c] = lambda x: fmt_currency_kpi(x, decimals=2)
         elif key in PERCENT_COLUMNS:
             result[c] = lambda x: fmt_percent(x, decimals=2, signed=False)
     return result
