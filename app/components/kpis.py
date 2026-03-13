@@ -7,6 +7,7 @@ import math
 from typing import Any
 
 import streamlit as st
+from app.ui.formatters import fmt_currency_kpi, fmt_percent
 
 
 def _as_metric_value(value: Any) -> str:
@@ -51,6 +52,28 @@ def render_kpi_row(kpis: list[dict[str, Any]]) -> None:
                 delta=delta,
                 help=help_text,
             )
+
+
+def build_executive_overview_primary_kpis(kpi_snapshot: dict[str, Any]) -> list[dict[str, Any]]:
+    """
+    Canonical 5-card Executive Overview row used by tab 1 and tab 2.
+    Keeps formatting and ordering consistent.
+    """
+    return [
+        {"label": "Selected Scope End AUM", "value": fmt_currency_kpi(kpi_snapshot.get("end_aum")), "delta": None, "help": None},
+        {"label": "Net New Business", "value": fmt_currency_kpi(kpi_snapshot.get("nnb")), "delta": None, "help": None},
+        {"label": "Net New Flow", "value": fmt_currency_kpi(kpi_snapshot.get("nnf")), "delta": None, "help": None},
+        {"label": "Organic Growth", "value": fmt_percent(kpi_snapshot.get("ogr"), decimals=2, signed=False), "delta": None, "help": None},
+        {"label": "Market Movement", "value": fmt_currency_kpi(kpi_snapshot.get("market_pnl")), "delta": None, "help": None},
+    ]
+
+
+def build_executive_overview_secondary_kpis(kpi_snapshot: dict[str, Any]) -> list[dict[str, Any]]:
+    """Optional second row for tab 2, matching formatter policy used in the primary row."""
+    return [
+        {"label": "Begin AUM", "value": fmt_currency_kpi(kpi_snapshot.get("begin_aum")), "delta": None, "help": None},
+        {"label": "Fee Yield", "value": fmt_percent(kpi_snapshot.get("fee_yield"), decimals=2, signed=False), "delta": None, "help": None},
+    ]
 
 
 def example_kpis() -> list[dict[str, Any]]:

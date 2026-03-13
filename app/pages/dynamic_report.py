@@ -34,6 +34,11 @@ from app.config.tab1_defaults import (
     TAB1_DEFAULT_SUB_SEGMENT,
     get_scope_label_from_state,
 )
+from app.components.kpis import (
+    build_executive_overview_primary_kpis,
+    build_executive_overview_secondary_kpis,
+    render_kpi_row,
+)
 from app.metrics.shared_payload import build_metric_payload
 from app.reporting.html_export import _safe_filename, build_report_html
 from app.reporting.reconciliation import run_reconciliation
@@ -451,14 +456,11 @@ def render(state: FilterState, contract: dict[str, Any]) -> None:
 
     st.markdown("#### Executive Overview")
     st.markdown("<div class='section-subtitle'>Growth direction, revenue quality, and market contribution.</div>", unsafe_allow_html=True)
-    c1, c2, c3, c4, c5, c6, c7 = st.columns(7)
-    c1.metric("Selected Scope End AUM", fmt_currency_kpi(kpi.get("end_aum")))
-    c2.metric("Begin AUM", fmt_currency_kpi(kpi.get("begin_aum")))
-    c3.metric("Net New Business", fmt_currency_kpi(kpi.get("nnb")))
-    c4.metric("Net New Flow", fmt_currency_kpi(kpi.get("nnf")))
-    c5.metric("Organic Growth", fmt_percent(kpi.get("ogr"), decimals=2, signed=True))
-    c6.metric("Market Impact", fmt_currency_kpi(kpi.get("market_pnl")))
-    c7.metric("Fee Yield", fmt_percent(kpi.get("fee_yield"), decimals=2, signed=True))
+    primary_kpis = build_executive_overview_primary_kpis(kpi)
+    LOGGER.debug("Investment Commentary KPI strings: %r", {item.get("label"): item.get("value") for item in primary_kpis})
+    render_kpi_row(primary_kpis)
+    # Second row: supporting indicators; same formatter policy as tab 1 primary row.
+    render_kpi_row(build_executive_overview_secondary_kpis(kpi))
     st.caption(f"Report slice: **{scope_label}**. All values are from the same filtered monthly source as Executive Dashboard KPIs.")
     overview_list = _overview_bullets_from_payload(kpi, period=period)
     for b in overview_list:

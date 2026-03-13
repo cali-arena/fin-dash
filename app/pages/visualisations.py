@@ -23,6 +23,7 @@ from app.config.tab1_defaults import (
     TAB1_DEFAULT_SUB_CHANNEL,
     TAB1_DEFAULT_SUB_SEGMENT,
 )
+from app.components.kpis import build_executive_overview_primary_kpis, render_kpi_row
 from app.data.data_gateway import DataGateway, load_dim_lookup, load_etf_reference
 from app.kpi.service import (
     apply_period_canonical,
@@ -445,12 +446,7 @@ def _semantic_colors(values: pd.Series, *, pos: str = PALETTE["positive"], neg: 
 def _render_core_metrics(kpi_snapshot: dict[str, Any], scope_label: str) -> None:
     """Render top-level KPIs from the single governed KPI snapshot."""
     st.caption(f"**Active scope for KPIs:** {scope_label}.")
-    k1, k2, k3, k4, k5 = st.columns(5)
-    k1.metric("Selected Scope End AUM", _fmt_currency(kpi_snapshot.get("end_aum")))
-    k2.metric("Net New Business", _fmt_currency(kpi_snapshot.get("nnb")))
-    k3.metric("Net New Flow", _fmt_currency(kpi_snapshot.get("nnf")))
-    k4.metric("Organic Growth", _fmt_pct(kpi_snapshot.get("ogr")))
-    k5.metric("Market Movement", _fmt_currency(kpi_snapshot.get("market_pnl")))
+    render_kpi_row(build_executive_overview_primary_kpis(kpi_snapshot))
 
     recon = (
         _coerce_num(kpi_snapshot.get("begin_aum"))
