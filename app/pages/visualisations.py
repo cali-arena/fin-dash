@@ -572,6 +572,10 @@ def _render_channel_breakdown(channel_scoped: pd.DataFrame) -> None:
     if chart_df.empty:
         _institutional_note("Distribution View", "Channel flow data in the selected scope is insufficient for comparative NNB and NNF analysis.")
         return
+    required = {"channel", "nnb", "nnf"}
+    if required - set(chart_df.columns):
+        _institutional_note("Distribution View", "Channel flow data in the selected scope is insufficient for comparative NNB and NNF analysis.")
+        return
     by_channel = chart_df.groupby("channel", as_index=False).agg(nnb=("nnb", "sum"), nnf=("nnf", "sum"))
     by_channel = by_channel.sort_values("nnb", ascending=False).head(15)
     if by_channel.empty or by_channel["channel"].nunique() < 2:
@@ -663,7 +667,11 @@ def _render_channel_breakdown(channel_scoped: pd.DataFrame) -> None:
         if drill_channel and drill_channel != "- View channels only (no drill) -":
             sub = channel_scoped[channel_scoped["channel"].astype(str) == str(drill_channel)].copy()
             sub_chart = _chart_filter_dimension(sub, "sub_channel") if "sub_channel" in sub.columns else sub
-            by_sub = sub_chart.groupby("sub_channel", as_index=False).agg(nnb=("nnb", "sum"), nnf=("nnf", "sum"))
+            sub_required = {"sub_channel", "nnb", "nnf"}
+            if not sub_chart.empty and not (sub_required - set(sub_chart.columns)):
+                by_sub = sub_chart.groupby("sub_channel", as_index=False).agg(nnb=("nnb", "sum"), nnf=("nnf", "sum"))
+            else:
+                by_sub = pd.DataFrame(columns=["sub_channel", "nnb", "nnf"])
             by_sub = by_sub.sort_values("nnb", ascending=False).head(12)
             if not by_sub.empty and by_sub["sub_channel"].nunique() >= 1:
                 sub_fig = go.Figure()
@@ -703,6 +711,10 @@ def _render_growth_quality_matrix(df_filtered: pd.DataFrame, monthly: pd.DataFra
     if go is None or df_filtered.empty:
         _institutional_note("Growth Quality Matrix", "Product-level flow and pricing data in the selected scope is insufficient for quadrant analysis.")
         return
+    matrix_cols = ["product_ticker", "month_end", "begin_aum", "end_aum", "nnb", "nnf"]
+    if set(matrix_cols) - set(df_filtered.columns):
+        _institutional_note("Growth Quality Matrix", "Product-level flow and pricing data in the selected scope is insufficient for quadrant analysis.")
+        return
     # --- Correct product-level aggregation ---
     # begin_aum is pre-computed in the ETL (prior month end_aum). Use it directly;
     # no shift(1) trick needed. This ensures the first period month is included in NNB/NNF sums.
@@ -714,6 +726,9 @@ def _render_growth_quality_matrix(df_filtered: pd.DataFrame, monthly: pd.DataFra
     )
     # Drop rows with no period opening AUM (products with no prior history before period start)
     product_monthly = product_monthly.dropna(subset=["begin_aum"]).reset_index(drop=True)
+    if product_monthly.empty:
+        _institutional_note("Growth Quality Matrix", "The selected slice is too concentrated for meaningful cross-product quality comparison.")
+        return
     product_monthly["market_pnl"] = product_monthly["end_aum"] - product_monthly["begin_aum"] - product_monthly["nnb"]
 
     mat_all = product_monthly.groupby("product_ticker", as_index=False).agg(
@@ -982,11 +997,12 @@ def _render_growth_quality_matrix(df_filtered: pd.DataFrame, monthly: pd.DataFra
     st.dataframe(format_df(action_table, action_formats), width="stretch", hide_index=True)
 
     top_strip = priority.head(3)["product_ticker"].astype(str).tolist()
-    if top_strip and "month_end" in df_filtered.columns:
+    if top_strip and "month_end" in df_filtered.columns and "nnb" in df_filtered.columns:
         trend_src = df_filtered[df_filtered["product_ticker"].astype(str).isin(top_strip)].copy()
-        trend_src = trend_src.groupby(["month_end", "product_ticker"], as_index=False)["nnb"].sum()
-        trend_src["month_end"] = pd.to_datetime(trend_src["month_end"], errors="coerce")
-        trend_src = trend_src.dropna(subset=["month_end"]).sort_values(["product_ticker", "month_end"])
+        if not trend_src.empty:
+            trend_src = trend_src.groupby(["month_end", "product_ticker"], as_index=False)["nnb"].sum()
+            trend_src["month_end"] = pd.to_datetime(trend_src["month_end"], errors="coerce")
+            trend_src = trend_src.dropna(subset=["month_end"]).sort_values(["product_ticker", "month_end"])
         if not trend_src.empty:
             strip = go.Figure()
             for tkr in top_strip:
@@ -1036,6 +1052,10 @@ def _render_etf_drilldown(ticker_scoped: pd.DataFrame) -> None:
     etf = _chart_filter_dimension(etf_raw, "product_ticker")
     if etf.empty:
         _institutional_note("ETF Drill-Down", "No ETF-labelled tickers are present in the selected period and scope.")
+        return
+    etf_required = {"product_ticker", "nnb", "nnf", "end_aum"}
+    if etf_required - set(etf.columns):
+        _institutional_note("ETF Drill-Down", "ETF flow or AUM columns are missing for the selected scope.")
         return
 
     by_etf = etf.groupby("product_ticker", as_index=False).agg(
@@ -1163,38 +1183,85 @@ def _resample_to_quarter(monthly: pd.DataFrame) -> pd.DataFrame:
     Aggregate monthly to quarter: first begin_aum, last end_aum, sum nnb and market_pnl;
     compute ogr and market_impact_rate. Quarter-end x-axis uses normalized midnight for clean display.
     """
-    if monthly is None or monthly.empty or "month_end" not in monthly.columns:
-        return pd.DataFrame()
+    out_cols = [
+        "quarter",
+        "month_end",
+        "begin_aum",
+        "end_aum",
+        "nnb",
+        "market_pnl",
+        "ogr",
+        "market_impact_rate",
+    ]
+
+    def _empty_quarter() -> pd.DataFrame:
+        return pd.DataFrame(columns=out_cols)
+
+    def _first_valid_numeric(s: pd.Series) -> float:
+        num = pd.to_numeric(s, errors="coerce").dropna()
+        return float(num.iloc[0]) if not num.empty else float("nan")
+
+    def _last_valid_numeric(s: pd.Series) -> float:
+        num = pd.to_numeric(s, errors="coerce").dropna()
+        return float(num.iloc[-1]) if not num.empty else float("nan")
+
+    def _sum_numeric(s: pd.Series) -> float:
+        num = pd.to_numeric(s, errors="coerce")
+        summed = num.sum(min_count=1)
+        return float(summed) if pd.notna(summed) else float("nan")
+
+    if monthly is None or monthly.empty:
+        return _empty_quarter()
+
+    required_cols = {"month_end", "begin_aum", "end_aum", "nnb"}
+    missing_required = required_cols - set(monthly.columns)
+    if missing_required:
+        LOGGER.debug("_resample_to_quarter: missing required columns %s; skipping quarter aggregation", missing_required)
+        return _empty_quarter()
+
     m = monthly.copy()
     m["month_end"] = pd.to_datetime(m["month_end"], errors="coerce")
     m = m.dropna(subset=["month_end"])
     if m.empty:
-        return pd.DataFrame()
-    m = m.sort_values("month_end").reset_index(drop=True)
-    m["quarter"] = m["month_end"].dt.to_period("Q")
-    # Sum market_pnl (dollar), not market_impact (rate); rate is computed after aggregation
-    agg_cols = {
-        "begin_aum": ("begin_aum", "first"),
-        "end_aum": ("end_aum", "last"),
-        "nnb": ("nnb", "sum"),
-    }
+        return _empty_quarter()
+
+    # Coerce numeric fields once so aggregations are deterministic even when raw dtype is object/string.
+    for c in ("begin_aum", "end_aum", "nnb"):
+        m[c] = pd.to_numeric(m[c], errors="coerce")
     if "market_pnl" in m.columns:
-        agg_cols["market_pnl"] = ("market_pnl", "sum")
+        m["market_pnl"] = pd.to_numeric(m["market_pnl"], errors="coerce")
     else:
         m["market_pnl"] = m["end_aum"] - m["begin_aum"] - m["nnb"]
-        agg_cols["market_pnl"] = ("market_pnl", "sum")
-    agg = m.groupby("quarter", as_index=False).agg(agg_cols)
-    # Quarter-end at midnight for stable, clean x-axis (avoids 23:59:59 or timezone artifacts on Cloud)
-    try:
-        q_end = agg["quarter"].dt.to_timestamp(how="end")
-        agg["month_end"] = pd.to_datetime(q_end.dt.normalize())
-    except TypeError:
-        agg["month_end"] = pd.to_datetime(agg["quarter"].astype(str).apply(lambda s: pd.Period(s).end_time.date()))
-    agg["ogr"] = agg.apply(lambda r: compute_ogr(r["nnb"], r["begin_aum"]), axis=1)
-    agg["market_impact_rate"] = agg.apply(
-        lambda r: compute_market_impact_rate(r["market_pnl"], r["begin_aum"]), axis=1
-    )
-    return agg.sort_values("month_end").reset_index(drop=True)
+
+    m = m.sort_values("month_end").reset_index(drop=True)
+    m["quarter"] = m["month_end"].dt.to_period("Q")
+
+    # Keep named aggregations explicit and pandas-safe (2.3+).
+    agg_spec: dict[str, tuple[str, Any]] = {
+        "begin_aum": ("begin_aum", _first_valid_numeric),
+        "end_aum": ("end_aum", _last_valid_numeric),
+        "nnb": ("nnb", _sum_numeric),
+        "market_pnl": ("market_pnl", _sum_numeric),
+    }
+    agg = m.groupby("quarter", as_index=False).agg(**agg_spec)
+    if agg.empty:
+        return _empty_quarter()
+
+    # Quarter-end at midnight for stable x-axis rendering and prior-year merge keys.
+    q_end = agg["quarter"].dt.to_timestamp(how="end")
+    agg["month_end"] = pd.to_datetime(q_end.dt.normalize())
+
+    # Derive rates after quarter-level dollars are finalized.
+    agg["ogr"] = [
+        compute_ogr(nnb, begin)
+        for nnb, begin in zip(agg["nnb"].tolist(), agg["begin_aum"].tolist())
+    ]
+    agg["market_impact_rate"] = [
+        compute_market_impact_rate(mkt, begin)
+        for mkt, begin in zip(agg["market_pnl"].tolist(), agg["begin_aum"].tolist())
+    ]
+
+    return agg[out_cols].sort_values("month_end").reset_index(drop=True)
 
 
 def _normalize_axis_dt(ser: pd.Series) -> pd.Series:
@@ -1490,24 +1557,26 @@ def _render_correlation(monthly: pd.DataFrame, channel_scoped: pd.DataFrame) -> 
     corr_ready = pd.DataFrame(columns=corr_cols)
     if channel_scoped is not None and not channel_scoped.empty:
         corr_df = _chart_filter_dimension(channel_scoped, "channel")
-        by_channel = corr_df.groupby("channel", as_index=False).agg(
-            nnb_channel=("nnb", "sum"),
-            nnf_channel=("nnf", "sum"),
-            begin_aum=("begin_aum", "sum"),
-            end_aum=("end_aum", "sum"),
-        )
-        by_channel["fee_yield_channel"] = by_channel.apply(
-            lambda r: compute_fee_yield_nnf_nnb(r.get("nnf_channel"), r.get("nnb_channel"))
-            if pd.notna(r.get("nnb_channel")) and float(r.get("nnb_channel")) > 0
-            else compute_fee_yield(r.get("nnf_channel"), r.get("begin_aum"), r.get("end_aum"), nnb=r.get("nnb_channel")),
-            axis=1,
-        )
-        by_channel["aum_growth"] = by_channel.apply(
-            lambda r: compute_ogr(r.get("end_aum") - r.get("begin_aum"), r.get("begin_aum")),
-            axis=1,
-        )
-        corr_ready = by_channel[corr_cols].copy()
-        corr_ready = corr_ready.apply(pd.to_numeric, errors="coerce").dropna(how="any")
+        corr_agg_required = {"channel", "nnb", "nnf", "begin_aum", "end_aum"}
+        if not corr_df.empty and not (corr_agg_required - set(corr_df.columns)):
+            by_channel = corr_df.groupby("channel", as_index=False).agg(
+                nnb_channel=("nnb", "sum"),
+                nnf_channel=("nnf", "sum"),
+                begin_aum=("begin_aum", "sum"),
+                end_aum=("end_aum", "sum"),
+            )
+            by_channel["fee_yield_channel"] = by_channel.apply(
+                lambda r: compute_fee_yield_nnf_nnb(r.get("nnf_channel"), r.get("nnb_channel"))
+                if pd.notna(r.get("nnb_channel")) and float(r.get("nnb_channel")) > 0
+                else compute_fee_yield(r.get("nnf_channel"), r.get("begin_aum"), r.get("end_aum"), nnb=r.get("nnb_channel")),
+                axis=1,
+            )
+            by_channel["aum_growth"] = by_channel.apply(
+                lambda r: compute_ogr(r.get("end_aum") - r.get("begin_aum"), r.get("begin_aum")),
+                axis=1,
+            )
+            corr_ready = by_channel[corr_cols].copy()
+            corr_ready = corr_ready.apply(pd.to_numeric, errors="coerce").dropna(how="any")
 
     if go is None or corr_ready.shape[0] < 2:
         _institutional_note(
@@ -1573,28 +1642,28 @@ def _render_top_bottom_table(ticker_scoped: pd.DataFrame, dataset_version: str =
         _institutional_note("Contributors Table", "Product-level contribution data is not available for the selected filters.")
         return
 
-    agg_dict: dict[str, Any] = {
-        "nnb": ("nnb", "sum"),
-        "nnf": ("nnf", "sum"),
-        "end_aum": ("end_aum", "sum"),
-    }
     contributors_df = _chart_filter_dimension(ticker_scoped, "product_ticker")
-    contributors = contributors_df.groupby("product_ticker", as_index=False).agg(**{k: v for k, v in agg_dict.items()})
+    contrib_required = {"product_ticker", "nnb", "nnf", "end_aum"}
+    if contributors_df.empty or (contrib_required - set(contributors_df.columns)):
+        _institutional_note("Contributors Table", "Product-level NNB, NNF, or AUM columns are missing for the selected filters.")
+        return
+    contributors = contributors_df.groupby("product_ticker", as_index=False).agg(
+        nnb=("nnb", "sum"),
+        nnf=("nnf", "sum"),
+        end_aum=("end_aum", "sum"),
+    )
 
     # Enrich contributors with canonical dimensions from dim_lookup (channel_group, sub_channel, country)
     # The pre-aggregated ticker_monthly does not carry channel/country; dim_lookup is the authoritative source.
     dim_lookup = _load_dim_lookup(ROOT, dataset_version)
     if not dim_lookup.empty and "product_ticker" in dim_lookup.columns:
-        dominant_dim = (
-            dim_lookup.groupby("product_ticker", as_index=False)
-            .agg(
-                channel=("channel_group", "first"),
-                sub_channel=("sub_channel", "first"),
-                country=("country", "first"),
-                sales_focus=("sales_focus", "first"),
-            )
-        )
-        contributors = contributors.merge(dominant_dim, on="product_ticker", how="left")
+        dim_agg_spec: dict[str, tuple[str, str]] = {}
+        for out_col, src_col in [("channel", "channel_group"), ("sub_channel", "sub_channel"), ("country", "country"), ("sales_focus", "sales_focus")]:
+            if src_col in dim_lookup.columns:
+                dim_agg_spec[out_col] = (src_col, "first")
+        if dim_agg_spec:
+            dominant_dim = dim_lookup.groupby("product_ticker", as_index=False).agg(**dim_agg_spec)
+            contributors = contributors.merge(dominant_dim, on="product_ticker", how="left")
         for col in ("channel", "sub_channel", "country", "sales_focus"):
             if col in contributors.columns:
                 # Show "—" for missing; reserve "Unassigned" for unmapped raw values only
