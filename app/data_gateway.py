@@ -3284,32 +3284,57 @@ def load_dim_lookup(root: Path | None = None) -> pd.DataFrame:
 
 DIM_LOOKUP_COLUMNS = ("product_ticker", "channel_group", "sub_channel", "country", "sales_focus", "sub_segment")
 
+# Frame column names that map to dim_lookup columns when building from selector frames (normalize_base_frame output).
+_DIM_FRAME_ALIASES: dict[str, tuple[str, ...]] = {
+    "channel_group": ("channel_group", "channel", "channel_final", "channel_standard"),
+    "sub_channel": ("sub_channel",),
+    "country": ("country", "src_country", "geo"),
+    "sales_focus": ("sales_focus", "uswa_sales_focus_2020"),
+    "sub_segment": ("sub_segment", "segment"),
+    "product_ticker": ("product_ticker", "ticker"),
+}
+
 
 def build_dim_lookup_from_frames(frames: dict[str, pd.DataFrame]) -> pd.DataFrame:
     """
     Build dimension lookup from normalized selector frames when data/curated/data_raw_normalized.parquet
-    is missing (e.g. not committed, ETL not run). Ensures filter dropdowns get real options from
-    channel_monthly / ticker_monthly / segment_monthly / geo_monthly.
+    is missing (e.g. not committed, ETL not run). Merges all frames and maps frame columns to
+    dim_lookup schema so filter dropdowns get full option lists (channel_group from channel, etc.).
     Returns same schema as load_dim_lookup: product_ticker, channel_group, sub_channel, country, sales_focus, sub_segment.
     """
+    from app.metrics.shared_payload import CHANNEL_STD_TO_GROUP
+
     dim_cols = list(DIM_LOOKUP_COLUMNS)
+    parts: list[pd.DataFrame] = []
     for name in ("channel_monthly", "ticker_monthly", "segment_monthly", "geo_monthly", "firm_monthly"):
         df = frames.get(name)
         if df is None or not isinstance(df, pd.DataFrame) or df.empty:
             continue
-        have = [c for c in dim_cols if c in df.columns]
-        if not have:
+        # Map frame columns to dim_lookup columns (use first matching column per dim)
+        out = pd.DataFrame()
+        for dim_col in dim_cols:
+            for alias in _DIM_FRAME_ALIASES.get(dim_col, (dim_col,)):
+                if alias in df.columns:
+                    if dim_col == "channel_group" and alias in ("channel", "channel_final", "channel_standard"):
+                        s = df[alias].astype(str).str.strip()
+                        out[dim_col] = s.map(CHANNEL_STD_TO_GROUP).fillna(s)
+                    else:
+                        out[dim_col] = df[alias].astype(str).str.strip().replace("", pd.NA)
+                    break
+            if dim_col not in out.columns:
+                out[dim_col] = pd.NA
+        if out.empty:
             continue
-        out = df[have].copy()
-        for c in dim_cols:
-            if c not in out.columns:
-                out[c] = pd.NA
         out = out[dim_cols].drop_duplicates()
-        # Display fallback only for truly missing
-        for c in dim_cols:
-            out[c] = out[c].fillna("Unassigned").astype(str).str.strip().replace("", "Unassigned")
-        return out.reset_index(drop=True)
-    return pd.DataFrame(columns=dim_cols)
+        parts.append(out)
+    if not parts:
+        return pd.DataFrame(columns=dim_cols)
+    combined = pd.concat(parts, ignore_index=True).drop_duplicates()
+    for c in dim_cols:
+        if c not in combined.columns:
+            combined[c] = pd.NA
+        combined[c] = combined[c].fillna("Unassigned").astype(str).str.strip().replace("", "Unassigned")
+    return combined[dim_cols].reset_index(drop=True)
 
 
 def load_etf_reference(root: Path | None = None) -> pd.DataFrame:

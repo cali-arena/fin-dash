@@ -43,6 +43,8 @@ ROOT = Path(__file__).resolve().parents[2]
 PERIOD_OPTIONS = ("1M", "QoQ", "YTD", "YoY")
 # Values to exclude from chart aggregation only (so "Unassigned" / "—" / blank do not appear as categories in charts)
 CHART_EXCLUDE_DIM_VALUES = frozenset({"", "Unassigned", "—", "nan"})
+# Placeholder values to exclude from filter dropdown options (case-insensitive)
+FILTER_OPTION_EXCLUDE = frozenset({"", "unassigned", "—", "nan", "none"})
 
 
 def _chart_filter_dimension(df: pd.DataFrame, dim_col: str) -> pd.DataFrame:
@@ -415,13 +417,13 @@ def _apply_period(df: pd.DataFrame, period: str) -> pd.DataFrame:
 
 
 def _selectbox_with_all(label: str, key: str, options: list[str]) -> str:
-    # Build options from data while excluding placeholder labels that should never be selectable.
+    # Build options from data while excluding placeholder labels (case-insensitive).
     clean_opts: list[str] = []
     for o in options or []:
         if o is None:
             continue
         s = str(o).strip()
-        if not s or s in {"Unassigned", "—"}:
+        if not s or s.lower() in FILTER_OPTION_EXCLUDE:
             continue
         clean_opts.append(s)
     opts = ["All"] + sorted(dict.fromkeys(clean_opts))
@@ -1711,22 +1713,53 @@ def render(state: FilterState, contract: dict[str, Any]) -> None:
     st.markdown("### Scope & filters")
     period = st.radio("Time Period", PERIOD_OPTIONS, horizontal=True, key="tab1_period")
 
-    # Canonical dimension lookup: channel_group (ibp_channel), sub_channel (std_channel_name),
-    # country (src_country), sales_focus (uswa_sales_focus_2020), sub_segment.
-    # QA: Filter dropdowns were showing only "All" and "Unassigned" when (1) data/curated/data_raw_normalized.parquet
-    # was missing (e.g. gitignored on Cloud) so dim_lookup was empty, and (2) _selectbox_with_all appended "Unassigned"
-    # when options were empty. Fix: fallback dim_lookup from selector_frames when parquet missing; stop adding fake
-    # "Unassigned" when no options; in load_dim_lookup derive channel_group from channel_standard (not channel_raw).
+    # Canonical dimension lookup: used for cascade narrowing and ticker_allowlist.
     dim_lookup = _load_dim_lookup(ROOT)
     if dim_lookup.empty and any(f is not None and not f.empty for f in selector_frames.values()):
         dim_lookup = build_dim_lookup_from_frames(selector_frames)
 
-    # Cascaded filter option builders from dim_lookup
+    # Option lists: primary source = selector_frames (actual loaded data) so all real values appear.
+    _FRAME_DIM_COLS: dict[str, tuple[str, ...]] = {
+        "channel_group": ("channel_group", "channel", "channel_final", "channel_standard"),
+        "sub_channel": ("sub_channel",),
+        "country": ("country", "src_country", "geo"),
+        "sales_focus": ("sales_focus", "uswa_sales_focus_2020"),
+        "sub_segment": ("sub_segment", "segment"),
+        "product_ticker": ("product_ticker", "ticker"),
+    }
+
+    def _opts_from_frames(col: str) -> list[str]:
+        """Unique values for dimension col from selector_frames (actual data). Excludes placeholders."""
+        seen: set[str] = set()
+        for frame in selector_frames.values():
+            if frame is None or frame.empty:
+                continue
+            for alias in _FRAME_DIM_COLS.get(col, (col,)):
+                if alias not in frame.columns:
+                    continue
+                for v in frame[alias].dropna().astype(str).str.strip().unique():
+                    if v and v.lower() not in FILTER_OPTION_EXCLUDE:
+                        seen.add(v)
+                break
+        return sorted(seen)
+
     def _dl_opts(mask: "pd.Series | None", col: str) -> list[str]:
+        """Options from dim_lookup (for cascade narrowing). Excludes placeholders."""
         if dim_lookup.empty or col not in dim_lookup.columns:
             return []
         df = dim_lookup[mask] if mask is not None else dim_lookup
-        return sorted(v for v in df[col].dropna().astype(str).unique() if v not in ("", "Unassigned", "nan", "—"))
+        return sorted(
+            v for v in df[col].dropna().astype(str).str.strip().unique()
+            if v and v.lower() not in FILTER_OPTION_EXCLUDE
+        )
+
+    def _filter_opts(opts_from_data: list[str], opts_from_lookup: list[str], mask: "pd.Series | None") -> list[str]:
+        """Union of data + lookup; when cascade active (mask set), narrow to lookup so selection is valid."""
+        combined = sorted(dict.fromkeys(opts_from_data + opts_from_lookup))
+        if mask is not None and opts_from_lookup:
+            allowed = set(opts_from_lookup)
+            return [v for v in combined if v in allowed]
+        return combined
 
     tab1 = _tab1_snapshot()
     sel_ch = tab1.get("tab1_filter_channel", TAB1_DEFAULT_CHANNEL)
@@ -1759,32 +1792,41 @@ def render(state: FilterState, contract: dict[str, Any]) -> None:
         st.markdown("<div class='tab1-filter-grid-anchor'></div>", unsafe_allow_html=True)
         row_1_col_1, row_1_col_2, row_1_col_3 = st.columns(3, gap="medium")
         with row_1_col_1:
-            # Channel = grouped channel (ibp_channel level)
-            _selectbox_with_all("Channel (grouped)", "tab1_filter_channel", _dl_opts(None, "channel_group"))
+            # Channel = grouped channel (ibp_channel level); options from actual data + lookup
+            channel_opts = _filter_opts(_opts_from_frames("channel_group"), _dl_opts(None, "channel_group"), None)
+            _selectbox_with_all("Channel (grouped)", "tab1_filter_channel", channel_opts)
         with row_1_col_2:
-            # Sub-Channel = std_channel_name
-            _selectbox_with_all("Sub-Channel (standard)", "tab1_filter_sub_channel", _dl_opts(ch_mask, "sub_channel"))
+            # Sub-Channel = std_channel_name; cascade by channel when selected
+            sub_opts = _filter_opts(_opts_from_frames("sub_channel"), _dl_opts(ch_mask, "sub_channel"), ch_mask)
+            _selectbox_with_all("Sub-Channel (standard)", "tab1_filter_sub_channel", sub_opts)
         with row_1_col_3:
-            _selectbox_with_all("Country", "tab1_filter_country", _dl_opts(sub_mask, "country"))
+            country_opts = _filter_opts(_opts_from_frames("country"), _dl_opts(sub_mask, "country"), sub_mask)
+            _selectbox_with_all("Country", "tab1_filter_country", country_opts)
 
         row_2_col_1, row_2_col_2, row_2_col_3 = st.columns(3, gap="medium")
         with row_2_col_1:
             # Sub-Segment (Segment filter removed - source is always Fixed Income)
-            _selectbox_with_all("Sub-Segment", "tab1_filter_sub_segment", _dl_opts(country_mask, "sub_segment"))
+            subseg_opts = _filter_opts(_opts_from_frames("sub_segment"), _dl_opts(country_mask, "sub_segment"), country_mask)
+            _selectbox_with_all("Sub-Segment", "tab1_filter_sub_segment", subseg_opts)
         with row_2_col_2:
             # Sales Focus (uswa_sales_focus_2020)
-            _selectbox_with_all("Sales Focus", "tab1_filter_sales_focus", _dl_opts(subseg_mask, "sales_focus"))
+            sf_opts = _filter_opts(_opts_from_frames("sales_focus"), _dl_opts(subseg_mask, "sales_focus"), subseg_mask)
+            _selectbox_with_all("Sales Focus", "tab1_filter_sales_focus", sf_opts)
         with row_2_col_3:
-            # Ticker - narrowed by all upstream filters
+            # Product Ticker: from period-scoped data + frames; narrow by sales_focus when set
             ticker_period_source = _apply_period(
                 selector_frames["ticker_monthly"] if not selector_frames["ticker_monthly"].empty else source_df,
                 period,
             )
-            ticker_opts = ticker_period_source["product_ticker"].astype(str).tolist() if "product_ticker" in ticker_period_source.columns else []
-            # Further narrow tickers by sales_focus if set
+            ticker_from_period = ticker_period_source["product_ticker"].astype(str).str.strip().unique().tolist() if "product_ticker" in ticker_period_source.columns else []
+            ticker_from_period = [t for t in ticker_from_period if t and t.lower() not in FILTER_OPTION_EXCLUDE]
+            ticker_from_frames = _opts_from_frames("product_ticker")
+            ticker_opts = sorted(dict.fromkeys(ticker_from_period + ticker_from_frames))
             if sel_sf not in (None, "", "All") and not dim_lookup.empty:
-                allowed_tickers = set(dim_lookup[dim_lookup["sales_focus"] == sel_sf]["product_ticker"].astype(str).unique())
-                ticker_opts = [t for t in ticker_opts if t in allowed_tickers]
+                allowed_tickers = set(dim_lookup[dim_lookup["sales_focus"] == sel_sf]["product_ticker"].astype(str).str.strip().unique())
+                allowed_tickers = {t for t in allowed_tickers if t and t.lower() not in FILTER_OPTION_EXCLUDE}
+                if allowed_tickers:
+                    ticker_opts = [t for t in ticker_opts if t in allowed_tickers]
             _selectbox_with_all("Product Ticker", "tab1_filter_ticker", ticker_opts)
 
         # Optional debug: show filter source stats (dataset row count, columns, unique values per filter column)
