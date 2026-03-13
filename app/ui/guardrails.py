@@ -121,3 +121,37 @@ def fallback_note(kind: str, details: dict[str, Any] | None = None) -> str:
     if kind == "selection_no_rows":
         return "Current selection has no rows under active filters."
     return "Showing table fallback."
+
+
+def validate_dataframe(
+    df: pd.DataFrame | None,
+    required_cols: list[str] | None = None,
+    min_rows: int = 0,
+) -> tuple[bool, list[str]]:
+    """
+    Canonical check for cloud-safe use: df exists, non-empty if min_rows > 0, has required columns.
+    Returns (True, []) when valid; (False, list of missing/message) when invalid.
+    """
+    if df is None or not isinstance(df, pd.DataFrame):
+        return False, ["dataframe is None or not a DataFrame"]
+    if min_rows > 0 and len(df) < min_rows:
+        return False, [f"fewer than {min_rows} rows"]
+    if required_cols:
+        missing = [c for c in required_cols if c not in df.columns]
+        if missing:
+            return False, [f"missing columns: {missing}"]
+    return True, []
+
+
+def safe_first_row(df: pd.DataFrame | None) -> dict[str, Any] | None:
+    """Return first row as dict, or None if df is None/empty. Avoids iloc[0] on empty."""
+    if df is None or not isinstance(df, pd.DataFrame) or df.empty:
+        return None
+    return df.iloc[0].to_dict()
+
+
+def safe_last_row(df: pd.DataFrame | None) -> dict[str, Any] | None:
+    """Return last row as dict, or None if df is None/empty. Avoids iloc[-1] on empty."""
+    if df is None or not isinstance(df, pd.DataFrame) or df.empty:
+        return None
+    return df.iloc[-1].to_dict()

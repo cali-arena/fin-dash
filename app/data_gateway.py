@@ -3225,39 +3225,91 @@ def get_last_refresh_ts(root: Path | None = None) -> str:
     return DataGateway(root or Path.cwd()).get_last_refresh_ts()
 
 
+def _normalize_dim_value(ser: pd.Series) -> pd.Series:
+    """Trim and treat blank/placeholder strings as NA; do NOT fill with Unassigned here."""
+    if ser is None or ser.empty:
+        return ser
+    s = ser.astype(str).str.strip()
+    s = s.replace(r"^\s*$", pd.NA, regex=True)
+    s = s.replace(["nan", "None", ""], pd.NA)
+    return s
+
+
 def load_dim_lookup(root: Path | None = None) -> pd.DataFrame:
     """
     Load product dimension lookup from data/curated/data_raw_normalized.parquet.
     Returns de-duped (product_ticker, channel_group, sub_channel, country, sales_focus, sub_segment) rows.
+    - channel_group is derived from channel_standard via CHANNEL_STD_TO_GROUP (grouped level), not from channel_raw.
+    - "Unassigned" is used only for truly null/blank values at display stage.
     All file access stays in the gateway.
     """
+    from app.metrics.shared_payload import CHANNEL_STD_TO_GROUP
+
     base = root or Path.cwd()
     path = base / "data" / "curated" / "data_raw_normalized.parquet"
     if not path.exists():
         return pd.DataFrame()
     try:
-        df = pd.read_parquet(
-            path,
-            columns=["product_ticker", "channel_raw", "channel_standard", "src_country", "uswa_sales_focus_2020", "sub_segment"],
-        )
-        df = df.rename(columns={
-            "channel_raw": "channel_group",
-            "channel_standard": "sub_channel",
-            "src_country": "country",
-            "uswa_sales_focus_2020": "sales_focus",
-        })
-        for col in ("channel_group", "sub_channel", "country", "sales_focus", "sub_segment", "product_ticker"):
-            if col in df.columns:
-                df[col] = df[col].fillna("Unassigned").astype(str).str.strip().replace("", "Unassigned")
+        # Read all columns then select; allow missing columns so older parquets still work
+        full = pd.read_parquet(path)
+        want = ["product_ticker", "channel_raw", "channel_standard", "src_country", "uswa_sales_focus_2020", "sub_segment"]
+        df = full[[c for c in want if c in full.columns]].copy()
+        for c in want:
+            if c not in df.columns:
+                df[c] = pd.NA
+        # sub_channel = standard channel name (channel_standard); preserve raw for display only where needed
+        df["sub_channel"] = _normalize_dim_value(df["channel_standard"])
+        # channel_group = grouped level from standard channel mapping; unmapped standard names pass through
+        std_clean = _normalize_dim_value(df["channel_standard"])
+        df["channel_group"] = std_clean.map(CHANNEL_STD_TO_GROUP).fillna(std_clean)
+        df["country"] = _normalize_dim_value(df["src_country"])
+        df["sales_focus"] = _normalize_dim_value(df["uswa_sales_focus_2020"]) if "uswa_sales_focus_2020" in full.columns else pd.NA
+        df["sub_segment"] = _normalize_dim_value(df["sub_segment"])
+        df["product_ticker"] = _normalize_dim_value(df["product_ticker"])
+        # Display aliases for channel_group (raw-style labels → display names)
         _CH_DISPLAY: dict[str, str] = {
             "Bwm": "National Private Bank",
             "Non-Us": "Non-US / International",
         }
-        if "channel_group" in df.columns:
-            df["channel_group"] = df["channel_group"].replace(_CH_DISPLAY)
-        return df.drop_duplicates().reset_index(drop=True)
+        df["channel_group"] = df["channel_group"].replace(_CH_DISPLAY)
+        # Only now apply Unassigned for display where value is still missing
+        for col in ("channel_group", "sub_channel", "country", "sales_focus", "sub_segment", "product_ticker"):
+            if col in df.columns:
+                df[col] = df[col].fillna("Unassigned").astype(str).str.strip().replace("", "Unassigned")
+        out = df[["product_ticker", "channel_group", "sub_channel", "country", "sales_focus", "sub_segment"]].drop_duplicates().reset_index(drop=True)
+        return out
     except Exception:
         return pd.DataFrame()
+
+
+DIM_LOOKUP_COLUMNS = ("product_ticker", "channel_group", "sub_channel", "country", "sales_focus", "sub_segment")
+
+
+def build_dim_lookup_from_frames(frames: dict[str, pd.DataFrame]) -> pd.DataFrame:
+    """
+    Build dimension lookup from normalized selector frames when data/curated/data_raw_normalized.parquet
+    is missing (e.g. not committed, ETL not run). Ensures filter dropdowns get real options from
+    channel_monthly / ticker_monthly / segment_monthly / geo_monthly.
+    Returns same schema as load_dim_lookup: product_ticker, channel_group, sub_channel, country, sales_focus, sub_segment.
+    """
+    dim_cols = list(DIM_LOOKUP_COLUMNS)
+    for name in ("channel_monthly", "ticker_monthly", "segment_monthly", "geo_monthly", "firm_monthly"):
+        df = frames.get(name)
+        if df is None or not isinstance(df, pd.DataFrame) or df.empty:
+            continue
+        have = [c for c in dim_cols if c in df.columns]
+        if not have:
+            continue
+        out = df[have].copy()
+        for c in dim_cols:
+            if c not in out.columns:
+                out[c] = pd.NA
+        out = out[dim_cols].drop_duplicates()
+        # Display fallback only for truly missing
+        for c in dim_cols:
+            out[c] = out[c].fillna("Unassigned").astype(str).str.strip().replace("", "Unassigned")
+        return out.reset_index(drop=True)
+    return pd.DataFrame(columns=dim_cols)
 
 
 def load_etf_reference(root: Path | None = None) -> pd.DataFrame:
@@ -3862,7 +3914,7 @@ def _build_anomalies_canonical(
         merged = cur_agg[[dim_col, "nnb"]].merge(
             prior_agg[[dim_col, "nnb"]],
             on=dim_col,
-            how="inner",
+            how="left",
             suffixes=("_cur", "_prior"),
         )
         for i in range(len(merged)):

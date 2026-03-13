@@ -12,7 +12,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import pandas as pd
+
 logger = logging.getLogger(__name__)
+_GATEWAY_STATS_WARNED = False
 
 # Default dataset version when meta is missing (overridden by meta or APP_DATA_VERSION).
 DATA_VERSION_DEFAULT = "unknown"
@@ -121,20 +124,27 @@ def _stats_from_gateway(root: Path) -> dict[str, Any]:
     """
     Compute contract stats through the canonical data gateway only.
     No direct DuckDB session/query path is allowed here.
+    Returns empty/default stats on any failure so the app does not crash.
     """
+    empty = {"row_count": 0, "min_date": None, "max_date": None, "sum_end_aum": 0.0, "sum_nnb": 0.0, "sum_nnf": 0.0}
+    global _GATEWAY_STATS_WARNED
     try:
         from app.data.data_gateway import Q_FIRM_MONTHLY, run_query
 
+        if root is None:
+            return empty
         df = run_query(Q_FIRM_MONTHLY, {}, root=root)
-        if df is None or df.empty:
-            return {"row_count": 0, "min_date": None, "max_date": None, "sum_end_aum": 0.0, "sum_nnb": 0.0, "sum_nnf": 0.0}
+        if df is None or not isinstance(df, pd.DataFrame) or df.empty:
+            return empty
+        logger.debug("Gateway contract stats input: rows=%s cols=%s", len(df), list(df.columns)[:10])
 
         work = df.copy()
         if "month_end" in work.columns:
             work["month_end"] = pd.to_datetime(work["month_end"], errors="coerce")
         for c in ("end_aum", "nnb", "nnf"):
-            if c in work.columns:
-                work[c] = pd.to_numeric(work[c], errors="coerce").fillna(0.0)
+            if c not in work.columns:
+                work[c] = 0.0
+            work[c] = pd.to_numeric(work[c], errors="coerce").fillna(0.0)
 
         min_d = work["month_end"].min() if "month_end" in work.columns and not work["month_end"].isna().all() else None
         max_d = work["month_end"].max() if "month_end" in work.columns and not work["month_end"].isna().all() else None
@@ -147,8 +157,12 @@ def _stats_from_gateway(root: Path) -> dict[str, Any]:
             "sum_nnf": float(work["nnf"].sum()) if "nnf" in work.columns else 0.0,
         }
     except Exception as e:
-        logger.warning("Gateway contract stats failed: %s", e)
-        return {"row_count": 0, "min_date": None, "max_date": None, "sum_end_aum": 0.0, "sum_nnb": 0.0, "sum_nnf": 0.0}
+        if not _GATEWAY_STATS_WARNED:
+            logger.warning("Gateway contract stats failed: %s", e, exc_info=False)
+            _GATEWAY_STATS_WARNED = True
+        else:
+            logger.debug("Gateway contract stats failed again: %s", e, exc_info=False)
+        return empty
 
 
 def pd_ts_to_iso(ts: Any) -> str | None:
@@ -156,7 +170,6 @@ def pd_ts_to_iso(ts: Any) -> str | None:
     if ts is None:
         return None
     try:
-        import pandas as pd
         return pd.Timestamp(ts).strftime("%Y-%m-%d")
     except Exception:
         return str(ts)

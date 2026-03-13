@@ -11,6 +11,9 @@ import plotly.graph_objects as go
 
 from app.ui.theme import PALETTE, apply_enterprise_plotly_style, safe_render_plotly
 
+# Exclude from chart aggregation only (so "Unassigned" / "—" / blank do not appear as categories)
+CHART_EXCLUDE_DIM = frozenset({"", "Unassigned", "—", "nan"})
+
 # Expected column names when passing real data (documentation only)
 # fig_aum_over_time: df with columns like "month_end" (or "date") + "end_aum" (or "aum")
 # fig_nnb_by_channel: df with "channel" (or "channel_l1") + "nnb" (or "value")
@@ -69,13 +72,18 @@ def fig_nnb_by_channel(df: pd.DataFrame | None = None) -> go.Figure:
     """
     Plotly bar chart for NNB by channel.
     If df is None, uses mock data. Expects df with channel column and value column (e.g. channel, nnb).
+    Placeholders (Unassigned, —, blank) are excluded from the chart only.
     """
     if df is None or df.empty:
         df = _mock_channel_data()
     label_col = "channel" if "channel" in df.columns else "channel_l1" if "channel_l1" in df.columns else df.columns[0]
     value_col = "nnb" if "nnb" in df.columns else "value" if "value" in df.columns else df.columns[1]
+    work = df.copy()
+    if label_col in work.columns:
+        s = work[label_col].astype(str).str.strip()
+        work = work[s.notna() & ~s.isin(CHART_EXCLUDE_DIM) & (s != "")]
     fig = go.Figure(data=[
-        go.Bar(x=df[label_col], y=df[value_col], name="NNB", marker_color=PALETTE["primary"]),
+        go.Bar(x=work[label_col], y=work[value_col], name="NNB", marker_color=PALETTE["primary"]),
     ])
     fig.update_layout(
         title="NNB by channel",

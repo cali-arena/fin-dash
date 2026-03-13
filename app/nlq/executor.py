@@ -536,6 +536,30 @@ def _execute_against_dataframe(
     max_rows: int = DEFAULT_MAX_ROWS,
 ) -> pd.DataFrame:
     """Pandas path: filters, groupby, aggregate (column or safe AST), sort, limit. Wall-clock guard."""
+    def _pick_latest_index(frame: pd.DataFrame) -> Any | None:
+        if frame is None or frame.empty:
+            return None
+        if "month_end" in frame.columns:
+            me = pd.to_datetime(frame["month_end"], errors="coerce")
+            valid = me.dropna()
+            if not valid.empty:
+                return valid.idxmax()
+        return frame.index[0] if len(frame.index) else None
+
+    def _pick_group_latest_indexes(frame: pd.DataFrame, dims: list[str]) -> pd.Index:
+        if frame is None or frame.empty:
+            return pd.Index([])
+        grouped = frame.groupby(dims, dropna=False)
+        if "month_end" not in frame.columns:
+            return pd.Index(grouped.apply(lambda g: g.index[0]).tolist())
+        me = pd.to_datetime(frame["month_end"], errors="coerce")
+        work = frame.assign(_month_end_safe=me)
+        grouped = work.groupby(dims, dropna=False)
+        idx_values = grouped.apply(
+            lambda g: g["_month_end_safe"].dropna().idxmax() if g["_month_end_safe"].notna().any() else g.index[0]
+        )
+        return pd.Index(idx_values.dropna().tolist())
+
     if df.empty:
         meta["elapsed_ms"] = 0
         meta["rows_returned"] = 0
@@ -554,6 +578,11 @@ def _execute_against_dataframe(
             continue
         vals_lower = [v.strip().lower() for v in values]
         out = out[out[dim].astype(str).str.strip().str.lower().isin(vals_lower)]
+    if out.empty:
+        meta["elapsed_ms"] = 0
+        meta["rows_returned"] = 0
+        meta["rows_capped"] = False
+        return _empty_result_with_schema(qs)
     by_id = _metrics_by_id(metric_reg)
     mid = qs.metric_id.strip().lower()
     metric_entry = by_id.get(mid) or {}
@@ -568,7 +597,7 @@ def _execute_against_dataframe(
             if default_agg == "sum":
                 val = out[col].sum()
             else:
-                idx = out["month_end"].idxmax() if "month_end" in out.columns else out.index[0]
+                idx = _pick_latest_index(out)
                 val = out.loc[idx, col] if len(out) else float("nan")
             agg_df = pd.DataFrame({"metric": [val]})
         elif kind == "expr" and ast:
@@ -577,7 +606,7 @@ def _execute_against_dataframe(
                 if default_agg == "sum":
                     row = out[needed].sum()
                 else:
-                    idx = out["month_end"].idxmax() if "month_end" in out.columns else out.index[0]
+                    idx = _pick_latest_index(out)
                     row = out.loc[idx, needed]
                 agg_df = row.to_frame().T
                 agg_df["metric"] = _ast_eval_pandas(ast, agg_df).values
@@ -591,13 +620,13 @@ def _execute_against_dataframe(
                 agg_df = out.groupby(groupby_cols, dropna=False)[col].sum().reset_index()
                 agg_df = agg_df.rename(columns={col: "metric"})
             else:
-                idx = out.groupby(groupby_cols)["month_end"].idxmax() if "month_end" in out.columns else out.groupby(groupby_cols).apply(lambda g: g.index[0])
+                idx = _pick_group_latest_indexes(out, groupby_cols)
                 agg_df = out.loc[idx, groupby_cols + [col]].copy()
                 agg_df = agg_df.rename(columns={col: "metric"})
         elif kind == "expr" and ast:
             needed = list(_ast_columns(ast))
             if default_agg == "last" and "month_end" in out.columns and all(c in out.columns for c in needed):
-                idx = out.groupby(groupby_cols)["month_end"].idxmax()
+                idx = _pick_group_latest_indexes(out, groupby_cols)
                 sub = out.loc[idx, groupby_cols + needed].copy()
             else:
                 agg_map = {c: "sum" if default_agg == "sum" else "last" for c in needed if c in out.columns}

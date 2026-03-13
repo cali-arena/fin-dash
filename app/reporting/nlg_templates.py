@@ -55,6 +55,26 @@ def _is_empty_like(obj: Any) -> bool:
         return True
 
 
+def _row_at_absmax(df: Any, col: str) -> Any | None:
+    """Return row at max absolute value for col using positional indexing on reset index."""
+    if _is_empty_like(df):
+        return None
+    cols = getattr(df, "columns", None)
+    if cols is None or col not in cols:
+        return None
+    try:
+        tmp = df.reset_index(drop=True)
+        if _is_empty_like(tmp):
+            return None
+        metric = tmp[col].abs()
+        if len(metric.dropna()) == 0:
+            return None
+        pos = int(metric.to_numpy().argmax())
+        return tmp.iloc[pos]
+    except Exception:
+        return None
+
+
 # --- Executive Overview: Are we growing? Is growth good? Where from? What changed? ---
 
 EXEC_PARAGRAPH_OPENING = (
@@ -227,10 +247,8 @@ def select_channel_commentary(bullets_from_rules: list[str], rank: Any, snap: di
     dim_col = "dim_value" if (cols is not None and "dim_value" in cols) else "name"
     for share_delta_col in ("aum_share_delta", "nnb_share_delta", "share_delta"):
         if cols is not None and share_delta_col in cols:
-            try:
-                idx = rank[share_delta_col].abs().idxmax()
-                row = rank.loc[idx]
-            except Exception:
+            row = _row_at_absmax(rank, share_delta_col)
+            if row is None:
                 continue
             delta = _num(row.get(share_delta_col))
             name = row.get(dim_col, "-")
@@ -282,10 +300,8 @@ def select_product_commentary(bullets_from_rules: list[str], rank: Any, fmt_mone
     dim_col = "dim_value" if (cols is not None and "dim_value" in cols) else "name"
     for share_delta_col in ("nnb_share_delta", "aum_share_delta", "share_delta"):
         if cols is not None and share_delta_col in cols:
-            try:
-                idx = rank[share_delta_col].abs().idxmax()
-                row = rank.loc[idx]
-            except Exception:
+            row = _row_at_absmax(rank, share_delta_col)
+            if row is None:
                 continue
             delta = _num(row.get(share_delta_col))
             if abs(delta) >= 0.01:
@@ -314,10 +330,8 @@ def select_geo_commentary(bullets_from_rules: list[str], rank: Any, fmt_pct: Any
     dim_col = "dim_value" if (cols is not None and "dim_value" in cols) else "name"
     for share_delta_col in ("aum_share_delta", "nnb_share_delta", "share_delta"):
         if cols is not None and share_delta_col in cols:
-            try:
-                idx = rank[share_delta_col].abs().idxmax()
-                row = rank.loc[idx]
-            except Exception:
+            row = _row_at_absmax(rank, share_delta_col)
+            if row is None:
                 continue
             delta = _num(row.get(share_delta_col))
             name = row.get(dim_col, "-")
@@ -431,10 +445,8 @@ def select_recommendations(
         for share_delta_col in ("aum_share_delta", "nnb_share_delta", "share_delta"):
             if share_delta_col not in cols:
                 continue
-            try:
-                idx = rank_df[share_delta_col].abs().idxmax()
-                row = rank_df.loc[idx]
-            except Exception:
+            row = _row_at_absmax(rank_df, share_delta_col)
+            if row is None:
                 continue
             if _num(row.get(share_delta_col)) >= MIX_SHIFT_REC_THRESHOLD:
                 bullets.append(REC_TEMPLATES[key].format(name=row.get(dim_col, "-")))

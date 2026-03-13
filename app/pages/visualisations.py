@@ -23,7 +23,7 @@ from app.config.tab1_defaults import (
     TAB1_DEFAULT_SUB_CHANNEL,
     TAB1_DEFAULT_SUB_SEGMENT,
 )
-from app.data.data_gateway import DataGateway, load_dim_lookup, load_etf_reference
+from app.data.data_gateway import DataGateway, build_dim_lookup_from_frames, load_dim_lookup, load_etf_reference
 from app.kpi.service import (
     apply_period_canonical,
 )
@@ -41,7 +41,17 @@ from app.ui.theme import PALETTE, apply_enterprise_plotly_style, safe_render_plo
 
 ROOT = Path(__file__).resolve().parents[2]
 PERIOD_OPTIONS = ("1M", "QoQ", "YTD", "YoY")
-LOGGER = logging.getLogger(__name__)
+# Values to exclude from chart aggregation only (so "Unassigned" / "—" / blank do not appear as categories in charts)
+CHART_EXCLUDE_DIM_VALUES = frozenset({"", "Unassigned", "—", "nan"})
+
+
+def _chart_filter_dimension(df: pd.DataFrame, dim_col: str) -> pd.DataFrame:
+    """Filter to rows where dim_col is not a placeholder. For chart aggregation only; does not mutate caller's df."""
+    if df is None or df.empty or dim_col not in df.columns:
+        return df.copy() if df is not None else pd.DataFrame()
+    s = df[dim_col].astype(str).str.strip()
+    mask = s.notna() & ~s.isin(CHART_EXCLUDE_DIM_VALUES) & (s != "")
+    return df.loc[mask].copy()
 
 
 @dataclass(frozen=True)
@@ -85,7 +95,13 @@ def _build_hero_narrative_context(monthly: pd.DataFrame, monthly_full: pd.DataFr
     }
     if monthly is None or monthly.empty:
         return out
-    sorted_full = monthly_full.sort_values("month_end").reset_index(drop=True) if monthly_full is not None and not monthly_full.empty else pd.DataFrame()
+    if "month_end" not in monthly.columns:
+        return out
+    sorted_full = (
+        monthly_full.sort_values("month_end").reset_index(drop=True)
+        if monthly_full is not None and not monthly_full.empty and "month_end" in monthly_full.columns
+        else pd.DataFrame()
+    )
     latest = monthly.sort_values("month_end").iloc[-1]
     out["latest"] = latest
     current_me = pd.Timestamp(latest["month_end"])
@@ -399,9 +415,16 @@ def _apply_period(df: pd.DataFrame, period: str) -> pd.DataFrame:
 
 
 def _selectbox_with_all(label: str, key: str, options: list[str]) -> str:
-    opts = ["All"] + sorted({o for o in options if isinstance(o, str) and o.strip()})
-    if len(opts) == 1:
-        opts.append("Unassigned")
+    # Build options from data while excluding placeholder labels that should never be selectable.
+    clean_opts: list[str] = []
+    for o in options or []:
+        if o is None:
+            continue
+        s = str(o).strip()
+        if not s or s in {"Unassigned", "—"}:
+            continue
+        clean_opts.append(s)
+    opts = ["All"] + sorted(dict.fromkeys(clean_opts))
     current = st.session_state.get(key, "All")
     if current not in opts:
         current = "All"
@@ -543,7 +566,11 @@ def _render_channel_breakdown(channel_scoped: pd.DataFrame) -> None:
     if go is None or channel_scoped.empty:
         _institutional_note("Distribution View", "Channel flow data in the selected scope is insufficient for comparative NNB and NNF analysis.")
         return
-    by_channel = channel_scoped.groupby("channel", as_index=False).agg(nnb=("nnb", "sum"), nnf=("nnf", "sum"))
+    chart_df = _chart_filter_dimension(channel_scoped, "channel")
+    if chart_df.empty:
+        _institutional_note("Distribution View", "Channel flow data in the selected scope is insufficient for comparative NNB and NNF analysis.")
+        return
+    by_channel = chart_df.groupby("channel", as_index=False).agg(nnb=("nnb", "sum"), nnf=("nnf", "sum"))
     by_channel = by_channel.sort_values("nnb", ascending=False).head(15)
     if by_channel.empty or by_channel["channel"].nunique() < 2:
         _institutional_note("Distribution View", "Flow contribution is concentrated in a single channel under the current slice.")
@@ -633,7 +660,8 @@ def _render_channel_breakdown(channel_scoped: pd.DataFrame) -> None:
         )
         if drill_channel and drill_channel != "- View channels only (no drill) -":
             sub = channel_scoped[channel_scoped["channel"].astype(str) == str(drill_channel)].copy()
-            by_sub = sub.groupby("sub_channel", as_index=False).agg(nnb=("nnb", "sum"), nnf=("nnf", "sum"))
+            sub_chart = _chart_filter_dimension(sub, "sub_channel") if "sub_channel" in sub.columns else sub
+            by_sub = sub_chart.groupby("sub_channel", as_index=False).agg(nnb=("nnb", "sum"), nnf=("nnf", "sum"))
             by_sub = by_sub.sort_values("nnb", ascending=False).head(12)
             if not by_sub.empty and by_sub["sub_channel"].nunique() >= 1:
                 sub_fig = go.Figure()
@@ -1002,7 +1030,8 @@ def _render_etf_drilldown(ticker_scoped: pd.DataFrame) -> None:
     if go is None or ticker_scoped.empty:
         _institutional_note("ETF Drill-Down", "ETF-labelled product data is not available for the selected scope.")
         return
-    etf = ticker_scoped[_is_etf_ticker(ticker_scoped["product_ticker"])].copy()
+    etf_raw = ticker_scoped[_is_etf_ticker(ticker_scoped["product_ticker"])].copy()
+    etf = _chart_filter_dimension(etf_raw, "product_ticker")
     if etf.empty:
         _institutional_note("ETF Drill-Down", "No ETF-labelled tickers are present in the selected period and scope.")
         return
@@ -1128,25 +1157,55 @@ def _render_etf_drilldown(ticker_scoped: pd.DataFrame) -> None:
 
 
 def _resample_to_quarter(monthly: pd.DataFrame) -> pd.DataFrame:
-    """Aggregate monthly to quarter: first begin_aum, last end_aum, sum nnb/market_impact; compute ogr and market_impact_rate."""
-    if monthly.empty or "month_end" not in monthly.columns:
+    """
+    Aggregate monthly to quarter: first begin_aum, last end_aum, sum nnb and market_pnl;
+    compute ogr and market_impact_rate. Quarter-end x-axis uses normalized midnight for clean display.
+    """
+    if monthly is None or monthly.empty or "month_end" not in monthly.columns:
         return pd.DataFrame()
     m = monthly.copy()
     m["month_end"] = pd.to_datetime(m["month_end"], errors="coerce")
-    m = m.dropna(subset=["month_end"]).sort_values("month_end")
+    m = m.dropna(subset=["month_end"])
+    if m.empty:
+        return pd.DataFrame()
+    m = m.sort_values("month_end").reset_index(drop=True)
     m["quarter"] = m["month_end"].dt.to_period("Q")
-    agg = m.groupby("quarter", as_index=False).agg(
-        begin_aum=("begin_aum", "first"),
-        end_aum=("end_aum", "last"),
-        nnb=("nnb", "sum"),
-        market_impact=("market_impact", "sum"),
-    )
-    agg["month_end"] = agg["quarter"].dt.to_timestamp("M") + pd.offsets.MonthEnd(0)
+    # Sum market_pnl (dollar), not market_impact (rate); rate is computed after aggregation
+    agg_cols = {
+        "begin_aum": ("begin_aum", "first"),
+        "end_aum": ("end_aum", "last"),
+        "nnb": ("nnb", "sum"),
+    }
+    if "market_pnl" in m.columns:
+        agg_cols["market_pnl"] = ("market_pnl", "sum")
+    else:
+        m["market_pnl"] = m["end_aum"] - m["begin_aum"] - m["nnb"]
+        agg_cols["market_pnl"] = ("market_pnl", "sum")
+    agg = m.groupby("quarter", as_index=False).agg(agg_cols)
+    # Quarter-end at midnight for stable, clean x-axis (avoids 23:59:59 or timezone artifacts on Cloud)
+    try:
+        q_end = agg["quarter"].dt.to_timestamp(how="end")
+        agg["month_end"] = pd.to_datetime(q_end.dt.normalize())
+    except TypeError:
+        agg["month_end"] = pd.to_datetime(agg["quarter"].astype(str).apply(lambda s: pd.Period(s).end_time.date()))
     agg["ogr"] = agg.apply(lambda r: compute_ogr(r["nnb"], r["begin_aum"]), axis=1)
     agg["market_impact_rate"] = agg.apply(
-        lambda r: compute_market_impact_rate(r["market_impact"], r["begin_aum"]), axis=1
+        lambda r: compute_market_impact_rate(r["market_pnl"], r["begin_aum"]), axis=1
     )
-    return agg
+    return agg.sort_values("month_end").reset_index(drop=True)
+
+
+def _normalize_axis_dt(ser: pd.Series) -> pd.Series:
+    """Normalize datetime to naive midnight for consistent x-axis and merge (avoids Cloud/local TZ issues)."""
+    if ser is None or ser.empty:
+        return ser
+    dt = pd.to_datetime(ser, errors="coerce")
+    try:
+        if hasattr(dt.dt, "tz") and dt.dt.tz is not None:
+            dt = dt.dt.tz_convert("UTC").dt.tz_localize(None)
+    except Exception:
+        pass
+    return pd.to_datetime(dt.dt.normalize())
 
 
 def _prior_year_series(
@@ -1156,15 +1215,19 @@ def _prior_year_series(
     value_cols: list[str],
     offset_months: int = 12,
 ) -> pd.DataFrame:
-    """Merge prior-year values: for each row in df, attach full's value from (period - offset_months)."""
-    if df.empty or full.empty or period_col not in full.columns:
+    """Merge prior-year values: for each row in df, attach full's value from (period - offset_months). Left join so current rows are never dropped."""
+    if df.empty or period_col not in df.columns:
+        return df.copy()
+    if full.empty or period_col not in full.columns:
         return df.copy()
     out = df.copy()
-    out["_dt"] = pd.to_datetime(out[period_col], errors="coerce")
-    full = full.sort_values(period_col).drop_duplicates(subset=[period_col], keep="last")
-    full["_dt"] = pd.to_datetime(full[period_col], errors="coerce")
+    out["_dt"] = _normalize_axis_dt(out[period_col])
+    full_sorted = full.sort_values(period_col).drop_duplicates(subset=[period_col], keep="last")
+    full_sorted = full_sorted.copy()
+    full_sorted["_dt"] = _normalize_axis_dt(full_sorted[period_col])
     prior_key = out["_dt"] - pd.DateOffset(months=offset_months)
-    right = full[["_dt"] + [c for c in value_cols if c in full.columns]].copy()
+    right_cols = ["_dt"] + [c for c in value_cols if c in full_sorted.columns]
+    right = full_sorted[right_cols].copy()
     right = right.rename(columns={c: f"prior_{c}" for c in value_cols if c in right.columns})
     right = right.rename(columns={"_dt": "_prior_dt"})
     out["_prior_dt"] = prior_key
@@ -1213,69 +1276,96 @@ def _render_trend_analysis(monthly: pd.DataFrame, monthly_full: pd.DataFrame | N
         return
 
     df = _prior_year_series(df, full if not full.empty else df, "month_end", ["ogr", "market_impact_rate"], offset_months=12)
+    df["month_end"] = _normalize_axis_dt(df["month_end"])
 
+    n_points = len(df)
     ogr = pd.to_numeric(df["ogr"], errors="coerce")
     mir = pd.to_numeric(df["market_impact_rate"], errors="coerce")
     x = df["month_end"]
+    if n_points == 0:
+        _institutional_note("Trend Analysis", "No data points after applying the selected period view.")
+        return
+
+    x_list = x.tolist()
+    ogr_list = ogr.fillna(float("nan")).tolist()
+    mir_list = mir.fillna(float("nan")).tolist()
+    n_axis = min(len(x_list), len(ogr_list), len(mir_list))
+    if n_axis == 0:
+        _institutional_note("Trend Analysis", "No valid data points for chart.")
+        return
+    if n_axis < len(x_list):
+        x_list, ogr_list, mir_list = x_list[:n_axis], ogr_list[:n_axis], mir_list[:n_axis]
 
     roll_mean = ogr.rolling(window=min(roll_window, len(ogr)), min_periods=1).mean()
-    roll_std = ogr.rolling(window=min(roll_window, len(ogr)), min_periods=1).std().fillna(0)
+    roll_std = ogr.rolling(window=min(roll_window, len(ogr)), min_periods=2).std()
     upper = roll_mean + roll_std
     lower = roll_mean - roll_std
 
     fig = go.Figure()
 
-    fig.add_trace(
-        go.Scatter(
-            x=list(x) + list(x[::-1]),
-            y=list(upper) + list(lower[::-1]),
-            fill="toself",
-            fillcolor="rgba(143, 180, 255, 0.2)",
-            line=dict(width=0),
-            name="OGR volatility band",
-            showlegend=True,
+    valid_ogr = ogr.dropna()
+    if len(valid_ogr) < 2:
+        st.caption("Volatility band requires at least 2 data points.")
+    elif (
+        n_points >= 2
+        and not roll_std.dropna().empty
+        and float(roll_std.dropna().max()) > 0
+    ):
+        band_n = min(n_axis, len(upper), len(lower))
+        fig.add_trace(
+            go.Scatter(
+                x=x_list[:band_n] + x_list[:band_n][::-1],
+                y=upper.iloc[:band_n].tolist() + lower.iloc[:band_n].tolist()[::-1],
+                fill="toself",
+                fillcolor="rgba(143, 180, 255, 0.2)",
+                line=dict(width=0),
+                name="OGR volatility band",
+                showlegend=True,
+            )
         )
-    )
+
     fig.add_scatter(
-        x=x,
-        y=ogr,
+        x=x_list,
+        y=ogr_list,
         mode="lines+markers",
         name="OGR",
         line=dict(color=PALETTE["primary"], width=2),
-        customdata=ogr.map(_fmt_pct),
+        customdata=[_fmt_pct(v) for v in ogr_list],
         hovertemplate=f"{period_label}: %{{x|%b %Y}}<br>OGR: %{{customdata}}<extra></extra>",
     )
     fig.add_scatter(
-        x=x,
-        y=mir,
+        x=x_list,
+        y=mir_list,
         mode="lines+markers",
         name="Market Impact Rate",
         line=dict(color=PALETTE["market"], width=2),
-        customdata=mir.map(_fmt_pct),
+        customdata=[_fmt_pct(v) for v in mir_list],
         hovertemplate=f"{period_label}: %{{x|%b %Y}}<br>Market Impact Rate: %{{customdata}}<extra></extra>",
     )
     if "prior_ogr" in df.columns:
-        prior_ogr = pd.to_numeric(df["prior_ogr"], errors="coerce")
-        fig.add_scatter(
-            x=x,
-            y=prior_ogr,
-            mode="lines+markers",
-            name="OGR (same period last year)",
-            line=dict(color=PALETTE["primary"], width=1, dash="dash"),
-            customdata=prior_ogr.map(_fmt_pct),
-            hovertemplate=f"{period_label}: %{{x|%b %Y}}<br>OGR prior year: %{{customdata}}<extra></extra>",
-        )
+        prior_ogr = pd.to_numeric(df["prior_ogr"], errors="coerce").fillna(float("nan")).tolist()[:n_axis]
+        if len(prior_ogr) == len(x_list):
+            fig.add_scatter(
+                x=x_list,
+                y=prior_ogr,
+                mode="lines+markers",
+                name="OGR (same period last year)",
+                line=dict(color=PALETTE["primary"], width=1, dash="dash"),
+                customdata=[_fmt_pct(v) for v in prior_ogr],
+                hovertemplate=f"{period_label}: %{{x|%b %Y}}<br>OGR prior year: %{{customdata}}<extra></extra>",
+            )
     if "prior_market_impact_rate" in df.columns:
-        prior_mir = pd.to_numeric(df["prior_market_impact_rate"], errors="coerce")
-        fig.add_scatter(
-            x=x,
-            y=prior_mir,
-            mode="lines+markers",
-            name="Market Impact Rate (same period last year)",
-            line=dict(color=PALETTE["market"], width=1, dash="dash"),
-            customdata=prior_mir.map(_fmt_pct),
-            hovertemplate=f"{period_label}: %{{x|%b %Y}}<br>Market Impact Rate prior year: %{{customdata}}<extra></extra>",
-        )
+        prior_mir = pd.to_numeric(df["prior_market_impact_rate"], errors="coerce").fillna(float("nan")).tolist()[:n_axis]
+        if len(prior_mir) == len(x_list):
+            fig.add_scatter(
+                x=x_list,
+                y=prior_mir,
+                mode="lines+markers",
+                name="Market Impact Rate (same period last year)",
+                line=dict(color=PALETTE["market"], width=1, dash="dash"),
+                customdata=[_fmt_pct(v) for v in prior_mir],
+                hovertemplate=f"{period_label}: %{{x|%b %Y}}<br>Market Impact Rate prior year: %{{customdata}}<extra></extra>",
+            )
 
     fig.update_layout(
         height=400,
@@ -1287,6 +1377,15 @@ def _render_trend_analysis(monthly: pd.DataFrame, monthly_full: pd.DataFrame | N
     apply_enterprise_plotly_style(fig, height=420)
     safe_render_plotly(fig)
     st.caption(f"Scope: **{scope}**. Band = OGR volatility; dashed = prior year.")
+
+    show_trend_debug = st.checkbox("Show trend debug", value=False, key="trend_show_debug")
+    if show_trend_debug:
+        with st.expander("Trend diagnostics", expanded=False):
+            st.write("**Input:**", "QoQ" if is_qoq else "MoM", "| monthly rows:", len(monthly), "| full rows:", len(monthly_full) if monthly_full is not None and not monthly_full.empty else 0)
+            st.write("**After resample/filter:**", n_points, "points")
+            if n_points > 0:
+                st.write("**x dtype:**", str(x.dtype), "| sample:", x_list[0] if x_list else "—")
+                st.write("**OGR nulls:**", ogr.isna().sum(), "| MIR nulls:", mir.isna().sum())
 
 
 def _render_correlation(monthly: pd.DataFrame, channel_scoped: pd.DataFrame) -> None:
@@ -1388,7 +1487,8 @@ def _render_correlation(monthly: pd.DataFrame, channel_scoped: pd.DataFrame) -> 
     corr_cols = ["nnb_channel", "fee_yield_channel", "aum_growth"]
     corr_ready = pd.DataFrame(columns=corr_cols)
     if channel_scoped is not None and not channel_scoped.empty:
-        by_channel = channel_scoped.groupby("channel", as_index=False).agg(
+        corr_df = _chart_filter_dimension(channel_scoped, "channel")
+        by_channel = corr_df.groupby("channel", as_index=False).agg(
             nnb_channel=("nnb", "sum"),
             nnf_channel=("nnf", "sum"),
             begin_aum=("begin_aum", "sum"),
@@ -1476,7 +1576,8 @@ def _render_top_bottom_table(ticker_scoped: pd.DataFrame) -> None:
         "nnf": ("nnf", "sum"),
         "end_aum": ("end_aum", "sum"),
     }
-    contributors = ticker_scoped.groupby("product_ticker", as_index=False).agg(**{k: v for k, v in agg_dict.items()})
+    contributors_df = _chart_filter_dimension(ticker_scoped, "product_ticker")
+    contributors = contributors_df.groupby("product_ticker", as_index=False).agg(**{k: v for k, v in agg_dict.items()})
 
     # Enrich contributors with canonical dimensions from dim_lookup (channel_group, sub_channel, country)
     # The pre-aggregated ticker_monthly does not carry channel/country; dim_lookup is the authoritative source.
@@ -1611,15 +1712,21 @@ def render(state: FilterState, contract: dict[str, Any]) -> None:
     period = st.radio("Time Period", PERIOD_OPTIONS, horizontal=True, key="tab1_period")
 
     # Canonical dimension lookup: channel_group (ibp_channel), sub_channel (std_channel_name),
-    # country (src_country), sales_focus (uswa_sales_focus_2020), sub_segment
+    # country (src_country), sales_focus (uswa_sales_focus_2020), sub_segment.
+    # QA: Filter dropdowns were showing only "All" and "Unassigned" when (1) data/curated/data_raw_normalized.parquet
+    # was missing (e.g. gitignored on Cloud) so dim_lookup was empty, and (2) _selectbox_with_all appended "Unassigned"
+    # when options were empty. Fix: fallback dim_lookup from selector_frames when parquet missing; stop adding fake
+    # "Unassigned" when no options; in load_dim_lookup derive channel_group from channel_standard (not channel_raw).
     dim_lookup = _load_dim_lookup(ROOT)
+    if dim_lookup.empty and any(f is not None and not f.empty for f in selector_frames.values()):
+        dim_lookup = build_dim_lookup_from_frames(selector_frames)
 
     # Cascaded filter option builders from dim_lookup
     def _dl_opts(mask: "pd.Series | None", col: str) -> list[str]:
         if dim_lookup.empty or col not in dim_lookup.columns:
             return []
         df = dim_lookup[mask] if mask is not None else dim_lookup
-        return sorted(v for v in df[col].dropna().astype(str).unique() if v not in ("", "Unassigned", "nan"))
+        return sorted(v for v in df[col].dropna().astype(str).unique() if v not in ("", "Unassigned", "nan", "—"))
 
     tab1 = _tab1_snapshot()
     sel_ch = tab1.get("tab1_filter_channel", TAB1_DEFAULT_CHANNEL)
@@ -1680,6 +1787,21 @@ def render(state: FilterState, contract: dict[str, Any]) -> None:
                 ticker_opts = [t for t in ticker_opts if t in allowed_tickers]
             _selectbox_with_all("Product Ticker", "tab1_filter_ticker", ticker_opts)
 
+        # Optional debug: show filter source stats (dataset row count, columns, unique values per filter column)
+        show_filter_debug = st.checkbox("Show filter debug", value=False, key="tab1_show_filter_debug")
+        if show_filter_debug:
+            with st.expander("Filter diagnostics", expanded=True):
+                st.caption("Dataset row count and unique values per filter source column.")
+                st.write("**Source frames:**", list(selector_frames.keys()))
+                for name, frame in selector_frames.items():
+                    if frame is not None and not frame.empty:
+                        st.write(f"- **{name}**: {len(frame)} rows")
+                if not dim_lookup.empty:
+                    st.write("**dim_lookup:**", len(dim_lookup), "rows")
+                    for col in ("channel_group", "sub_channel", "country", "sales_focus", "sub_segment", "product_ticker"):
+                        if col in dim_lookup.columns:
+                            uniq = dim_lookup[col].dropna().astype(str).unique()
+                            st.write(f"- **{col}**: {sorted(uniq)[:20]}{' ...' if len(uniq) > 20 else ''}")
 
     tab1 = _tab1_snapshot()
 

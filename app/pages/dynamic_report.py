@@ -20,6 +20,9 @@ try:
 except ImportError:
     go = None
 
+# Exclude from chart aggregation only (so "Unassigned" / "—" / blank do not appear as bar labels)
+CHART_EXCLUDE_LABELS = frozenset({"", "Unassigned", "—", "nan"})
+
 from app.data.data_gateway import HEAVY_BUDGET_MS
 from app.config.tab1_defaults import (
     TAB1_DEFAULT_CHANNEL,
@@ -43,7 +46,7 @@ from app.reporting.report_engine import (
 from app.state import FilterState, get_filter_state
 from app.ui.exports import render_export_buttons
 from app.ui.formatters import fmt_currency, fmt_percent, format_df, infer_common_formats
-from app.ui.guardrails import render_empty_state, render_timeout_state
+from app.ui.guardrails import render_empty_state, render_error_state, render_timeout_state
 
 try:
     from app.export_utils import make_pdf_with_footer
@@ -112,28 +115,55 @@ def _section_bullets_from_rank(df: pd.DataFrame, label_col: str, label_name: str
     work = df.copy()
     work["nnb"] = pd.to_numeric(work.get("nnb"), errors="coerce").fillna(0.0)
     work["end_aum"] = pd.to_numeric(work.get("end_aum"), errors="coerce").fillna(0.0)
-    leader = work.sort_values(["nnb", label_col], ascending=[False, True]).iloc[0]
-    laggard = work.sort_values(["nnb", label_col], ascending=[True, True]).iloc[0]
+    if work.empty:
+        return [f"{label_name} analysis is unavailable for the selected scope."]
+    sorted_leader = work.sort_values(["nnb", label_col], ascending=[False, True])
+    sorted_laggard = work.sort_values(["nnb", label_col], ascending=[True, True])
+    if sorted_leader.empty or sorted_laggard.empty:
+        return [f"{label_name} analysis is unavailable for the selected scope."]
+    leader = sorted_leader.iloc[0]
+    laggard = sorted_laggard.iloc[0]
     return [
         f"Top {label_name.lower()} by NNB: {leader[label_col]} ({fmt_currency(leader['nnb'], unit='auto', decimals=2)}).",
         f"Weakest {label_name.lower()} by NNB: {laggard[label_col]} ({fmt_currency(laggard['nnb'], unit='auto', decimals=2)}).",
     ]
 
 
-def _anomaly_bullets_from_shared(anomalies_df: pd.DataFrame) -> list[str]:
-    if anomalies_df is None or anomalies_df.empty:
-        return ["No statistically significant anomalies were flagged in the selected scope and period."]
+def _anomaly_bullets_from_shared(anomalies_df: pd.DataFrame | None) -> list[str]:
+    """Build anomaly summary bullets. Handles None, empty, missing columns, and sparse data without crashing."""
+    fallback = ["No statistically significant anomalies were flagged in the selected scope and period."]
+    if anomalies_df is None or not isinstance(anomalies_df, pd.DataFrame) or anomalies_df.empty:
+        return fallback
     work = anomalies_df.copy()
-    work["zscore"] = pd.to_numeric(work.get("zscore"), errors="coerce")
-    work["value_current"] = pd.to_numeric(work.get("value_current"), errors="coerce")
+    required = {"zscore", "value_current"}
+    if not required.issubset(set(work.columns)):
+        return fallback
+    if "entity" not in work.columns:
+        work["entity"] = "selected scope"
+    work["zscore"] = pd.to_numeric(work["zscore"], errors="coerce")
+    work["value_current"] = pd.to_numeric(work["value_current"], errors="coerce")
+    if work["zscore"].dropna().empty:
+        return fallback
     work = work.dropna(subset=["zscore", "value_current"])
     if work.empty:
-        return ["No statistically significant anomalies were flagged in the selected scope and period."]
-    peak = work.iloc[work["zscore"].abs().idxmax()]
-    direction = "positive" if float(peak["value_current"]) >= 0 else "negative"
+        return fallback
+    try:
+        # Use positional selection after index reset to avoid label/duplicate-index hazards.
+        work = work.reset_index(drop=True)
+        peak_pos = int(work["zscore"].abs().values.argmax())
+        peak = work.iloc[peak_pos]
+    except (ValueError, KeyError, IndexError, TypeError):
+        return fallback
+    entity_name = str(peak.get("entity", peak.get("dim_value", "selected scope")))
+    try:
+        val_cur = float(peak["value_current"])
+        zval = float(peak["zscore"])
+    except (TypeError, ValueError):
+        return fallback
+    direction = "positive" if val_cur >= 0 else "negative"
     return [
-        f"Largest flow anomaly occurred in {peak['entity']} with {direction} NNB of {fmt_currency(peak['value_current'], unit='auto', decimals=2)}.",
-        f"Anomaly intensity (|z-score|) peaked at {abs(float(peak['zscore'])):.2f} in the selected period.",
+        f"Largest flow anomaly occurred in {entity_name} with {direction} NNB of {fmt_currency(val_cur, unit='auto', decimals=2)}.",
+        f"Anomaly intensity (|z-score|) peaked at {abs(zval):.2f} in the selected period.",
     ]
 
 
@@ -219,7 +249,7 @@ def _normalize_bullets(bullets: list[str] | None, limit: int = 5) -> list[str]:
 
 
 def _ranked_bar(df: pd.DataFrame, title: str, key: str, prefs: list[str]) -> bool:
-    if go is None:
+    if go is None or df is None or df.empty:
         return False
     label = _label_col(df)
     metric = _metric_col(df, prefs)
@@ -229,9 +259,12 @@ def _ranked_bar(df: pd.DataFrame, title: str, key: str, prefs: list[str]) -> boo
     work[metric] = pd.to_numeric(work[metric], errors="coerce")
     work = work.dropna(subset=[metric])
     work = work[work[label].astype(str).str.strip() != ""]
+    work = work[~work[label].astype(str).str.strip().isin(CHART_EXCLUDE_LABELS)]
+    if work.empty:
+        return False
     work = pd.concat([work.sort_values(metric, ascending=False).head(5), work.sort_values(metric, ascending=True).head(5)])
     work = work.drop_duplicates(subset=[label])
-    if not has_minimum_categories(work, label, 2) or not has_meaningful_variation(work[metric]):
+    if work.empty or not has_minimum_categories(work, label, 2) or not has_meaningful_variation(work[metric]):
         return False
     fig = go.Figure(go.Bar(x=work[metric], y=work[label].astype(str), orientation="h", marker=dict(color=[PALETTE["positive"] if v >= 0 else PALETTE["negative"] for v in work[metric]])))
     fig.update_layout(title=title, xaxis_title=metric, yaxis_title="", height=320, margin=dict(l=8, r=8, t=42, b=8))
@@ -336,21 +369,26 @@ def render(state: FilterState, contract: dict[str, Any]) -> None:
     h3.caption(f"Data refresh timestamp: {updated}")
     st.markdown("<div class='section-subtitle'>Portfolio commentary and evidence; narrative from internal data.</div>", unsafe_allow_html=True)
 
-    with st.spinner("Loading investment commentary..."):
-        gateway = _get_gateway()
-        pack = gateway.get_report_pack(filters)
-        shared_payload = build_metric_payload(
-            gateway=gateway,
-            state=filters,
-            scope_label=scope_label,
-            period=period,
-            channel=tab1.get("tab1_filter_channel", TAB1_DEFAULT_CHANNEL),
-            sub_channel=tab1.get("tab1_filter_sub_channel", TAB1_DEFAULT_SUB_CHANNEL),
-            country=tab1.get("tab1_filter_country", TAB1_DEFAULT_COUNTRY),
-            segment=None,  # Segment filter removed: source is always Fixed Income
-            sub_segment=tab1.get("tab1_filter_sub_segment", TAB1_DEFAULT_SUB_SEGMENT),
-            ticker=tab1.get("tab1_filter_ticker", TAB1_DEFAULT_PRODUCT_TICKER),
-        )
+    try:
+        with st.spinner("Loading investment commentary..."):
+            gateway = _get_gateway()
+            pack = gateway.get_report_pack(filters)
+            shared_payload = build_metric_payload(
+                gateway=gateway,
+                state=filters,
+                scope_label=scope_label,
+                period=period,
+                channel=tab1.get("tab1_filter_channel", TAB1_DEFAULT_CHANNEL),
+                sub_channel=tab1.get("tab1_filter_sub_channel", TAB1_DEFAULT_SUB_CHANNEL),
+                country=tab1.get("tab1_filter_country", TAB1_DEFAULT_COUNTRY),
+                segment=None,  # Segment filter removed: source is always Fixed Income
+                sub_segment=tab1.get("tab1_filter_sub_segment", TAB1_DEFAULT_SUB_SEGMENT),
+                ticker=tab1.get("tab1_filter_ticker", TAB1_DEFAULT_PRODUCT_TICKER),
+            )
+    except Exception as e:
+        LOGGER.warning("Investment Commentary load failed: %s", e, exc_info=False)
+        render_error_state("Investment Commentary", e, "Try adjusting filters or reload the page.")
+        return
     log = st.session_state.get("perf_query_log") or []
     if any(e.get("name") == "get_report_pack" and ("over_budget" in str(e.get("warning") or "")) for e in log[-10:]):
         render_timeout_state("Report generation", HEAVY_BUDGET_MS, "Try a shorter date range.")
