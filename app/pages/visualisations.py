@@ -23,7 +23,7 @@ from app.config.tab1_defaults import (
     TAB1_DEFAULT_SUB_CHANNEL,
     TAB1_DEFAULT_SUB_SEGMENT,
 )
-from app.data.data_gateway import DataGateway, build_dim_lookup_from_frames, load_dim_lookup, load_etf_reference
+from app.data.data_gateway import DataGateway, load_dim_lookup, load_etf_reference
 from app.kpi.service import (
     apply_period_canonical,
 )
@@ -38,14 +38,21 @@ from app.state import FilterState
 from app.ui.exports import render_export_buttons
 from app.ui.formatters import fmt_bps, fmt_currency, format_df, infer_common_formats
 from app.ui.theme import PALETTE, apply_enterprise_plotly_style, safe_render_plotly
+from app.viz.tab1_filter_pipeline import (
+    LABEL_ALL,
+    TAB1_FILTER_SPECS,
+    build_canonical_filter_frame,
+    build_cascaded_options,
+    canonicalize_lookup_frame,
+    validate_selections,
+)
 
 ROOT = Path(__file__).resolve().parents[2]
+LOGGER = logging.getLogger(__name__)
 PERIOD_OPTIONS = ("1M", "QoQ", "YTD", "YoY")
+DEBUG_FILTERS = False
 # Values to exclude from chart aggregation only (so "Unassigned" / "—" / blank do not appear as categories in charts)
 CHART_EXCLUDE_DIM_VALUES = frozenset({"", "Unassigned", "—", "nan"})
-# Placeholder values to exclude from filter dropdown options (case-insensitive)
-FILTER_OPTION_EXCLUDE = frozenset({"", "unassigned", "—", "nan", "none"})
-
 
 def _chart_filter_dimension(df: pd.DataFrame, dim_col: str) -> pd.DataFrame:
     """Filter to rows where dim_col is not a placeholder. For chart aggregation only; does not mutate caller's df."""
@@ -390,7 +397,7 @@ KNOWN_ETF_TICKERS = frozenset(
 
 
 @st.cache_data
-def _load_dim_lookup(_root: Path) -> pd.DataFrame:
+def _load_dim_lookup(_root: Path, _dataset_version: str) -> pd.DataFrame:
     """Cached wrapper: dimension lookup via data_gateway only."""
     return load_dim_lookup(_root)
 
@@ -417,21 +424,12 @@ def _apply_period(df: pd.DataFrame, period: str) -> pd.DataFrame:
 
 
 def _selectbox_with_all(label: str, key: str, options: list[str]) -> str:
-    # Build options from data while excluding placeholder labels (case-insensitive).
-    clean_opts: list[str] = []
-    for o in options or []:
-        if o is None:
-            continue
-        s = str(o).strip()
-        if not s or s.lower() in FILTER_OPTION_EXCLUDE:
-            continue
-        clean_opts.append(s)
-    opts = ["All"] + sorted(dict.fromkeys(clean_opts))
+    opts = [LABEL_ALL] + sorted(dict.fromkeys(options or []))
     current = st.session_state.get(key, "All")
     if current not in opts:
         # Flush stale value so the widget renders "All", not the now-invalid selection.
-        st.session_state[key] = "All"
-        current = "All"
+        st.session_state[key] = LABEL_ALL
+        current = LABEL_ALL
     return st.selectbox(label, opts, index=opts.index(current), key=key)
 
 
@@ -1569,7 +1567,7 @@ def _render_correlation(monthly: pd.DataFrame, channel_scoped: pd.DataFrame) -> 
         )
 
 
-def _render_top_bottom_table(ticker_scoped: pd.DataFrame) -> None:
+def _render_top_bottom_table(ticker_scoped: pd.DataFrame, dataset_version: str = "") -> None:
     _section_header("7) Top and Bottom Contributors Table", "Product-level NNB, NNF, and AUM; filter, sort, export.")
     if ticker_scoped.empty:
         _institutional_note("Contributors Table", "Product-level contribution data is not available for the selected filters.")
@@ -1585,7 +1583,7 @@ def _render_top_bottom_table(ticker_scoped: pd.DataFrame) -> None:
 
     # Enrich contributors with canonical dimensions from dim_lookup (channel_group, sub_channel, country)
     # The pre-aggregated ticker_monthly does not carry channel/country; dim_lookup is the authoritative source.
-    dim_lookup = _load_dim_lookup(ROOT)
+    dim_lookup = _load_dim_lookup(ROOT, dataset_version)
     if not dim_lookup.empty and "product_ticker" in dim_lookup.columns:
         dominant_dim = (
             dim_lookup.groupby("product_ticker", as_index=False)
@@ -1715,195 +1713,100 @@ def render(state: FilterState, contract: dict[str, Any]) -> None:
     st.markdown("### Scope & filters")
     period = st.radio("Time Period", PERIOD_OPTIONS, horizontal=True, key="tab1_period")
 
-    # Lookup sources: parquet (can be stale/cached); runtime = built from THIS run's selector_frames.
-    dim_lookup = _load_dim_lookup(ROOT)
-    has_any_frames = any(f is not None and not f.empty for f in selector_frames.values())
-    runtime_lookup = build_dim_lookup_from_frames(selector_frames) if has_any_frames else pd.DataFrame()
-    # Use runtime lookup for option lists so dropdowns reflect current data, not cached parquet.
-    if not runtime_lookup.empty:
-        dim_lookup_for_opts = runtime_lookup
-        lookup_source = "runtime (from selector_frames)"
-    elif not dim_lookup.empty:
-        dim_lookup_for_opts = dim_lookup
-        lookup_source = "parquet (data/curated/data_raw_normalized.parquet)"
-    else:
-        dim_lookup_for_opts = dim_lookup
-        lookup_source = "none (empty)"
+    dataset_version = gateway.get_dataset_version()
+    dim_lookup = _load_dim_lookup(ROOT, dataset_version)
+    runtime_options_df = build_canonical_filter_frame(selector_frames, TAB1_FILTER_SPECS)
+    lookup_options_df = canonicalize_lookup_frame(dim_lookup, TAB1_FILTER_SPECS)
 
-    # Option lists: primary source = dim_lookup_for_opts (runtime first, then parquet).
-    _FRAME_DIM_COLS: dict[str, tuple[str, ...]] = {
-        "channel_group": ("channel_group", "channel", "channel_final", "channel_standard"),
-        "sub_channel": ("channel_final", "sub_channel"),  # channel_final = std_channel_name in channel_monthly
-        "country": ("country", "src_country", "geo"),
-        "sales_focus": ("sales_focus", "uswa_sales_focus_2020"),
-        "sub_segment": ("sub_segment", "segment"),
-        "product_ticker": ("product_ticker", "ticker"),
+    selections = {
+        spec.session_key: str(st.session_state.get(spec.session_key, LABEL_ALL))
+        for spec in TAB1_FILTER_SPECS
     }
-
-    def _opts_from_frames(col: str) -> list[str]:
-        """Unique values for dimension col from selector_frames (actual data). Excludes placeholders."""
-        seen: set[str] = set()
-        for frame in selector_frames.values():
-            if frame is None or frame.empty:
-                continue
-            for alias in _FRAME_DIM_COLS.get(col, (col,)):
-                if alias not in frame.columns:
-                    continue
-                for v in frame[alias].dropna().astype(str).str.strip().unique():
-                    if v and v.lower() not in FILTER_OPTION_EXCLUDE:
-                        seen.add(v)
-                break
-        return sorted(seen)
-
-    def _dl_opts(mask: "pd.Series | None", col: str) -> list[str]:
-        """Options from options lookup (runtime or parquet). Excludes placeholders."""
-        if dim_lookup_for_opts.empty or col not in dim_lookup_for_opts.columns:
-            return []
-        df = dim_lookup_for_opts[mask] if mask is not None else dim_lookup_for_opts
-        return sorted(
-            v for v in df[col].dropna().astype(str).str.strip().unique()
-            if v and v.lower() not in FILTER_OPTION_EXCLUDE
+    options_by_session: dict[str, list[str]] = {}
+    option_source_by_session: dict[str, str] = {}
+    for _ in range(2):
+        options_by_session, option_source_by_session = build_cascaded_options(
+            runtime_options_df,
+            lookup_options_df,
+            selections,
+            TAB1_FILTER_SPECS,
         )
+        healed = validate_selections(selections, options_by_session)
+        if healed == selections:
+            break
+        selections = healed
 
-    def _filter_opts(opts_from_data: list[str], opts_from_lookup: list[str], mask: "pd.Series | None") -> list[str]:
-        """Union of data + lookup; when cascade active (mask set), narrow to lookup."""
-        combined = sorted(dict.fromkeys(opts_from_data + opts_from_lookup))
-        if mask is not None and opts_from_lookup:
-            allowed = set(opts_from_lookup)
-            return [v for v in combined if v in allowed]
-        return combined
+    for spec in TAB1_FILTER_SPECS:
+        st.session_state[spec.session_key] = selections.get(spec.session_key, LABEL_ALL)
 
-    tab1 = _tab1_snapshot()
-    sel_ch = tab1.get("tab1_filter_channel", TAB1_DEFAULT_CHANNEL)
-    sel_sub = tab1.get("tab1_filter_sub_channel", TAB1_DEFAULT_SUB_CHANNEL)
-    sel_country = tab1.get("tab1_filter_country", TAB1_DEFAULT_COUNTRY)
-    sel_subseg = tab1.get("tab1_filter_sub_segment", TAB1_DEFAULT_SUB_SEGMENT)
-    sel_sf = tab1.get("tab1_filter_sales_focus", TAB1_DEFAULT_SALES_FOCUS)
-
-    # Sibling-based cascade: each dropdown's options are narrowed by ALL other active filters,
-    # excluding the dimension itself.  This gives true bidirectional narrowing — selecting
-    # Sub-Channel narrows Channel, selecting Country narrows Sub-Channel, etc.
-    def _dim_mask(col: str, val: str) -> "pd.Series | None":
-        if val in (None, "", "All") or dim_lookup_for_opts.empty or col not in dim_lookup_for_opts.columns:
-            return None
-        return dim_lookup_for_opts[col] == val
-
-    def _and_masks(*masks: "pd.Series | None") -> "pd.Series | None":
-        result = None
-        for m in masks:
-            if m is None:
-                continue
-            result = m if result is None else (result & m)
-        return result
-
-    m_ch      = _dim_mask("channel_group", sel_ch)
-    m_sub     = _dim_mask("sub_channel",   sel_sub)
-    m_country = _dim_mask("country",       sel_country)
-    m_subseg  = _dim_mask("sub_segment",   sel_subseg)
-    m_sf      = _dim_mask("sales_focus",   sel_sf)
-
-    # Per-dropdown mask = intersection of all sibling selections (exclude self)
-    ch_mask      = _and_masks(m_sub, m_country, m_subseg, m_sf)
-    sub_mask     = _and_masks(m_ch,  m_country, m_subseg, m_sf)
-    country_mask = _and_masks(m_ch,  m_sub,     m_subseg, m_sf)
-    subseg_mask  = _and_masks(m_ch,  m_sub,     m_country, m_sf)
-    sf_mask      = _and_masks(m_ch,  m_sub,     m_country, m_subseg)
+    # Instrument option extraction (before selectboxes)
+    channel_opts = options_by_session.get("tab1_filter_channel", [])
+    sub_opts = options_by_session.get("tab1_filter_sub_channel", [])
+    country_opts = options_by_session.get("tab1_filter_country", [])
+    subseg_opts = options_by_session.get("tab1_filter_sub_segment", [])
+    sf_opts = options_by_session.get("tab1_filter_sales_focus", [])
+    ticker_opts = options_by_session.get("tab1_filter_ticker", [])
 
     filter_grid = st.container()
     with filter_grid:
         st.markdown("<div class='tab1-filter-grid-anchor'></div>", unsafe_allow_html=True)
         row_1_col_1, row_1_col_2, row_1_col_3 = st.columns(3, gap="medium")
         with row_1_col_1:
-            channel_opts = _filter_opts(_opts_from_frames("channel_group"), _dl_opts(ch_mask, "channel_group"), ch_mask)
             _selectbox_with_all("Channel (grouped)", "tab1_filter_channel", channel_opts)
         with row_1_col_2:
-            sub_opts = _filter_opts(_opts_from_frames("sub_channel"), _dl_opts(sub_mask, "sub_channel"), sub_mask)
             _selectbox_with_all("Sub-Channel (standard)", "tab1_filter_sub_channel", sub_opts)
         with row_1_col_3:
-            country_opts = _filter_opts(_opts_from_frames("country"), _dl_opts(country_mask, "country"), country_mask)
             _selectbox_with_all("Country", "tab1_filter_country", country_opts)
 
         row_2_col_1, row_2_col_2, row_2_col_3 = st.columns(3, gap="medium")
         with row_2_col_1:
-            subseg_opts = _filter_opts(_opts_from_frames("sub_segment"), _dl_opts(subseg_mask, "sub_segment"), subseg_mask)
             _selectbox_with_all("Sub-Segment", "tab1_filter_sub_segment", subseg_opts)
         with row_2_col_2:
-            sf_opts = _filter_opts(_opts_from_frames("sales_focus"), _dl_opts(sf_mask, "sales_focus"), sf_mask)
             _selectbox_with_all("Sales Focus", "tab1_filter_sales_focus", sf_opts)
         with row_2_col_3:
-            # Product Ticker: from period-scoped data + frames; narrow by sales_focus when set
-            ticker_period_source = _apply_period(
-                selector_frames["ticker_monthly"] if not selector_frames["ticker_monthly"].empty else source_df,
-                period,
-            )
-            ticker_from_period = ticker_period_source["product_ticker"].astype(str).str.strip().unique().tolist() if "product_ticker" in ticker_period_source.columns else []
-            ticker_from_period = [t for t in ticker_from_period if t and t.lower() not in FILTER_OPTION_EXCLUDE]
-            ticker_from_frames = _opts_from_frames("product_ticker")
-            ticker_from_lookup = _dl_opts(None, "product_ticker")
-            ticker_opts = sorted(dict.fromkeys(ticker_from_period + ticker_from_frames + ticker_from_lookup))
-            if sel_sf not in (None, "", "All") and not dim_lookup_for_opts.empty:
-                allowed_tickers = set(dim_lookup_for_opts[dim_lookup_for_opts["sales_focus"] == sel_sf]["product_ticker"].astype(str).str.strip().unique())
-                allowed_tickers = {t for t in allowed_tickers if t and t.lower() not in FILTER_OPTION_EXCLUDE}
-                if allowed_tickers:
-                    ticker_opts = [t for t in ticker_opts if t in allowed_tickers]
             _selectbox_with_all("Product Ticker", "tab1_filter_ticker", ticker_opts)
 
-        # Temporary debug: runtime option source and distinct values (remove after root cause confirmed)
-        with st.expander("Filter option source (runtime)", expanded=False):
-            st.caption("Source file, dataframe shapes, lookup origin, first 20 distinct values per dimension.")
-            st.text(f"Source file: app.pages.visualisations.render (ROOT={ROOT})")
-            st.write("**Selector frames (shape):**")
-            for name, frame in selector_frames.items():
-                if frame is not None and not frame.empty:
-                    st.text(f"  {name}: {frame.shape[0]} rows × {frame.shape[1]} cols")
-                else:
-                    st.text(f"  {name}: empty or None")
-            st.text(f"Lookup source: {lookup_source}")
-            st.text(f"dim_lookup (parquet) rows: {len(dim_lookup)}; runtime_lookup rows: {len(runtime_lookup)}")
-            for col in ("channel_group", "sub_channel", "country", "sales_focus", "product_ticker"):
-                vals = []
-                if not dim_lookup_for_opts.empty and col in dim_lookup_for_opts.columns:
-                    u = dim_lookup_for_opts[col].dropna().astype(str).str.strip().unique()
-                    vals = sorted(v for v in u if v and v.lower() not in FILTER_OPTION_EXCLUDE)[:20]
-                st.text(f"  {col}: {vals}")
-            ch_frame = selector_frames.get("channel_monthly")
-            if ch_frame is not None and not ch_frame.empty and "channel_final" in ch_frame.columns:
-                u = ch_frame["channel_final"].dropna().astype(str).str.strip().unique()
-                vals = sorted(v for v in u if v and v.lower() not in FILTER_OPTION_EXCLUDE)[:20]
-                st.text(f"  channel_final (from channel_monthly): {vals}")
-            st.text(f"Channel options count: {len(channel_opts)}; first 20: {channel_opts[:20]}")
-
-        # Hidden debug: checkbox (or SHOW_FILTER_DEBUG=1) to show option sources and counts
-        _filter_debug_default = __import__("os").environ.get("SHOW_FILTER_DEBUG", "") == "1"
-        show_filter_debug = st.checkbox("Show filter debug", value=_filter_debug_default, key="tab1_show_filter_debug")
-        if show_filter_debug:
-            with st.expander("Filter diagnostics", expanded=True):
-                st.caption("Dataset row count and unique values per filter source column.")
-                st.write("**Source frames:**", list(selector_frames.keys()))
-                for name, frame in selector_frames.items():
-                    if frame is not None and not frame.empty:
-                        st.write(f"- **{name}**: {len(frame)} rows")
-                if not dim_lookup_for_opts.empty:
-                    st.write("**Lookup (options):**", len(dim_lookup_for_opts), "rows, source:", lookup_source)
-                    for col in ("channel_group", "sub_channel", "country", "sales_focus", "sub_segment", "product_ticker"):
-                        if col in dim_lookup_for_opts.columns:
-                            uniq = dim_lookup_for_opts[col].dropna().astype(str).unique()
-                            st.write(f"- **{col}**: {sorted(uniq)[:20]}{' ...' if len(uniq) > 20 else ''}")
-                st.write("**Filter options (sibling-narrowed):**")
-                st.write(f"- Channel (grouped): {channel_opts}")
-                st.write(f"- Sub-Channel (standard): {sub_opts}")
-                st.write(f"- Country: {country_opts}")
-                st.write(f"- Sub-Segment: {subseg_opts}")
-                st.write(f"- Sales Focus: {sf_opts}")
+        if DEBUG_FILTERS:
+            with st.expander("Filter diagnostics", expanded=False):
+                st.write(
+                    {
+                        "dataset_version": dataset_version,
+                        "runtime_rows": int(len(runtime_options_df)),
+                        "lookup_rows": int(len(lookup_options_df)),
+                    }
+                )
+                for spec in TAB1_FILTER_SPECS:
+                    col = spec.source_column
+                    runtime_distinct = int(runtime_options_df[col].dropna().nunique()) if col in runtime_options_df.columns else 0
+                    lookup_distinct = int(lookup_options_df[col].dropna().nunique()) if col in lookup_options_df.columns else 0
+                    st.write(
+                        {
+                            "filter": spec.label,
+                            "source": option_source_by_session.get(spec.session_key, "none"),
+                            "source_column": col,
+                            "runtime_distinct": runtime_distinct,
+                            "lookup_distinct": lookup_distinct,
+                            "option_count": int(len(options_by_session.get(spec.session_key, []))),
+                        }
+                    )
 
     tab1 = _tab1_snapshot()
 
     # Compute ticker allowlist for Sales Focus filter (ensures KPI metrics reflect the correct scope)
     ticker_allowlist: list[str] | None = None
-    if tab1.get("tab1_filter_sales_focus", TAB1_DEFAULT_SALES_FOCUS) not in (None, "", "All") and not dim_lookup_for_opts.empty:
-        sf_val = tab1["tab1_filter_sales_focus"]
-        allowed = dim_lookup_for_opts[dim_lookup_for_opts["sales_focus"] == sf_val]["product_ticker"].astype(str).unique().tolist()
-        ticker_allowlist = allowed if allowed else None
+    sf_val = tab1.get("tab1_filter_sales_focus", TAB1_DEFAULT_SALES_FOCUS)
+    if sf_val not in (None, "", LABEL_ALL):
+        source_df_for_allowlist = runtime_options_df if not runtime_options_df.empty else lookup_options_df
+        if (
+            not source_df_for_allowlist.empty
+            and "sales_focus" in source_df_for_allowlist.columns
+            and "product_ticker" in source_df_for_allowlist.columns
+        ):
+            allowed = source_df_for_allowlist.loc[
+                source_df_for_allowlist["sales_focus"] == sf_val,
+                "product_ticker",
+            ].dropna().astype(str).tolist()
+            ticker_allowlist = sorted(dict.fromkeys(allowed)) if allowed else None
 
     payload = build_metric_payload(
         gateway=gateway,
@@ -1984,4 +1887,4 @@ def render(state: FilterState, contract: dict[str, Any]) -> None:
         _render_etf_drilldown(df_period)
         _render_trend_analysis(monthly, monthly_full)
         _render_correlation(monthly, df_period)
-        _render_top_bottom_table(df_period)
+        _render_top_bottom_table(df_period, dataset_version=dataset_version)
