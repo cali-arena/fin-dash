@@ -42,7 +42,6 @@ from app.components.kpis import (
 from app.metrics.shared_payload import build_metric_payload
 from app.reporting.html_export import _safe_filename, build_report_html
 from app.reporting.reconciliation import run_reconciliation
-from app.reporting.report_charts import fig_aum_trend_mpl
 from app.reporting.report_engine import (
     SectionOutput,
     render_overview,
@@ -51,7 +50,7 @@ from app.reporting.report_engine import (
 from app.state import FilterState, get_filter_state
 from app.ui.exports import render_export_buttons
 from app.ui.formatters import fmt_currency_kpi, fmt_percent, format_df, infer_common_formats
-from app.ui.guardrails import render_empty_state, render_error_state, render_timeout_state
+from app.ui.guardrails import render_error_state, render_timeout_state
 
 try:
     from app.export_utils import make_pdf_with_footer
@@ -129,8 +128,8 @@ def _section_bullets_from_rank(df: pd.DataFrame, label_col: str, label_name: str
     leader = sorted_leader.iloc[0]
     laggard = sorted_laggard.iloc[0]
     return [
-        f"Top {label_name.lower()} by NNB: {leader[label_col]} ({fmt_currency(leader['nnb'], unit='auto', decimals=2)}).",
-        f"Weakest {label_name.lower()} by NNB: {laggard[label_col]} ({fmt_currency(laggard['nnb'], unit='auto', decimals=2)}).",
+        f"Top {label_name.lower()} by NNB: {leader[label_col]} ({fmt_currency_kpi(leader['nnb'])}).",
+        f"Weakest {label_name.lower()} by NNB: {laggard[label_col]} ({fmt_currency_kpi(laggard['nnb'])}).",
     ]
 
 

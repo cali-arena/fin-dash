@@ -20,7 +20,7 @@ from app.reporting.nlg_templates import (
     select_geo_commentary as nlg_geo,
     select_recommendations as nlg_recommendations,
 )
-from app.ui.formatters import fmt_currency, fmt_currency_kpi, fmt_number, fmt_percent
+from app.ui.formatters import fmt_currency_kpi, fmt_number, fmt_percent
 
 # --- Constants (template / rule thresholds) ------------------------------------
 
