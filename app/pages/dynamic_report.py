@@ -128,8 +128,8 @@ def _section_bullets_from_rank(df: pd.DataFrame, label_col: str, label_name: str
     leader = sorted_leader.iloc[0]
     laggard = sorted_laggard.iloc[0]
     return [
-        f"Top {label_name.lower()} by NNB: {leader[label_col]} ({fmt_currency_kpi(leader['nnb'])}).",
-        f"Weakest {label_name.lower()} by NNB: {laggard[label_col]} ({fmt_currency_kpi(laggard['nnb'])}).",
+        f"Top {label_name.lower()} by NNB: {leader[label_col]} ({fmt_currency_kpi(leader['nnb'], decimals=2)}).",
+        f"Weakest {label_name.lower()} by NNB: {laggard[label_col]} ({fmt_currency_kpi(laggard['nnb'], decimals=2)}).",
     ]
 
 
