@@ -1844,6 +1844,17 @@ def render(state: FilterState, contract: dict[str, Any]) -> None:
                         if col in dim_lookup.columns:
                             uniq = dim_lookup[col].dropna().astype(str).unique()
                             st.write(f"- **{col}**: {sorted(uniq)[:20]}{' ...' if len(uniq) > 20 else ''}")
+                st.write("**Filter options:**")
+                channel_opts = _filter_opts(_opts_from_frames("channel_group"), _dl_opts(None, "channel_group"), None)
+                sub_opts = _filter_opts(_opts_from_frames("sub_channel"), _dl_opts(ch_mask, "sub_channel"), ch_mask)
+                country_opts = _filter_opts(_opts_from_frames("country"), _dl_opts(sub_mask, "country"), sub_mask)
+                subseg_opts = _filter_opts(_opts_from_frames("sub_segment"), _dl_opts(country_mask, "sub_segment"), country_mask)
+                sf_opts = _filter_opts(_opts_from_frames("sales_focus"), _dl_opts(subseg_mask, "sales_focus"), subseg_mask)
+                st.write(f"- Channel (grouped): {channel_opts}")
+                st.write(f"- Sub-Channel (standard): {sub_opts}")
+                st.write(f"- Country: {country_opts}")
+                st.write(f"- Sub-Segment: {subseg_opts}")
+                st.write(f"- Sales Focus: {sf_opts}")
 
     tab1 = _tab1_snapshot()
 
