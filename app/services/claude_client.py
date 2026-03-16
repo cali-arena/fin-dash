@@ -143,3 +143,69 @@ def claude_generate(
         if "context" in err_msg or "length" in err_msg or "token" in err_msg:
             raise ClaudeError("The request was too long. Try a shorter question or narrower scope.") from e
         raise ClaudeError("Claude could not generate a response. Please try again.") from e
+
+
+def claude_generate_grounded(
+    system_prompt: str,
+    user_message: str,
+    model: str = "claude-3-7-sonnet-latest",
+    max_tokens: int = 1200,
+) -> str:
+    """
+    Generate a response with system + user messages. Used for data-grounded Intelligence Desk:
+    system = dataset rules + context, user = question.
+    """
+    system_prompt = _truncate_prompt((system_prompt or "").strip())
+    user_message = (user_message or "").strip()
+    if not user_message:
+        raise ClaudeError("No user message provided.")
+    max_tokens = _cap_max_tokens(max_tokens)
+    start = time.perf_counter()
+
+    try:
+        client = get_claude_client()
+    except ClaudeError:
+        raise
+    except Exception as e:
+        logger.warning("Claude client init failed: %s", type(e).__name__)
+        raise ClaudeError("Unable to connect to Claude. Check app configuration.") from e
+
+    try:
+        response = client.messages.create(
+            model=model,
+            max_tokens=max_tokens,
+            system=system_prompt if system_prompt else "",
+            messages=[{"role": "user", "content": user_message}],
+        )
+        duration_s = time.perf_counter() - start
+        logger.info(
+            "[%s] Claude grounded request success=True system_len=%d user_len=%d model=%s duration_sec=%.2f",
+            BUILD_MARKER,
+            len(system_prompt),
+            len(user_message),
+            model,
+            duration_s,
+        )
+        if not response.content:
+            raise ClaudeError("Claude returned an empty response. Please try again.")
+        text_chunks = []
+        for block in response.content:
+            piece = (getattr(block, "text", "") or "").strip()
+            if piece:
+                text_chunks.append(piece)
+        text = "\n".join(text_chunks).strip()
+        if not text:
+            raise ClaudeError("Claude returned no text. Please try again.")
+        return text
+    except ClaudeError:
+        raise
+    except Exception as e:
+        duration_s = time.perf_counter() - start
+        err_msg = (getattr(e, "message", None) or str(e) or "").strip().lower()
+        if any(tok in err_msg for tok in ("auth", "invalid", "401", "403", "api_key", "authentication")):
+            raise ClaudeError("Claude authentication failed. Check app configuration.") from e
+        if "overloaded" in err_msg or "rate" in err_msg or "429" in err_msg:
+            raise ClaudeError("Claude is temporarily busy. Please try again in a moment.") from e
+        if "context" in err_msg or "length" in err_msg or "token" in err_msg:
+            raise ClaudeError("The request was too long. Try a shorter question or narrower scope.") from e
+        raise ClaudeError("Claude could not generate a response. Please try again.") from e

@@ -15,11 +15,13 @@ from datetime import date
 from pathlib import Path
 from typing import Any, Callable
 
+import json
 import pandas as pd
 import plotly.express as px
 import streamlit as st
 
 from app.data.data_gateway import Q_CHANNEL_MONTHLY, Q_TICKER_MONTHLY, run_query
+from app.pages.intelligence_desk_retrieval import retrieve_intelligence_desk_context
 from app.nlq.deterministic_summary import build_deterministic_summary
 from app.nlq.executor import QueryResult, execute_queryspec
 from app.nlq.governance import GovernanceError, load_dim_registry, load_metric_registry, validate_queryspec
@@ -43,12 +45,14 @@ try:
         ClaudeError,
         anthropic_sdk_available,
         claude_generate,
+        claude_generate_grounded,
         has_claude_api_key,
     )
 except Exception:
     ClaudeError = Exception  # type: ignore[misc, assignment]
     anthropic_sdk_available = None  # type: ignore[assignment]
     claude_generate = None  # type: ignore[assignment]
+    claude_generate_grounded = None  # type: ignore[assignment]
     has_claude_api_key = None  # type: ignore[assignment]
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -60,6 +64,7 @@ CLAUDE_DEBUG_KEY = "nlq_claude_debug"
 INTEL_DESK_MODEL = "claude-haiku-4-5"
 INTEL_CHAT_HISTORY_KEY = "inteldesk_chat_history_v3"
 INTEL_CHAT_INPUT_KEY = "inteldesk_chat_input_v3"
+INTEL_LAST_SUBSET_DF_KEY = "inteldesk_last_subset_df"
 
 
 @dataclass(frozen=True)
@@ -345,6 +350,88 @@ def _load_value_catalog(gateway_dict: dict[str, Any], root: Path) -> dict[str, s
         if col in df.columns:
             catalog[col] = set(df[col].dropna().astype(str).str.strip().unique().tolist())
     return catalog
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _load_intelligence_desk_df(gateway_dict_json: str, root_str: str) -> pd.DataFrame:
+    """
+    Load platform dataset for Intelligence Desk (ticker then channel fallback).
+    Cached by filter state to avoid reloading on every question.
+    """
+    try:
+        gateway_dict = json.loads(gateway_dict_json)
+    except Exception:
+        gateway_dict = {}
+    root = Path(root_str) if root_str else ROOT
+    try:
+        out = run_query(Q_TICKER_MONTHLY, gateway_dict, root=root)
+        if isinstance(out, pd.DataFrame) and not out.empty:
+            return out
+    except Exception:
+        pass
+    try:
+        out = run_query(Q_CHANNEL_MONTHLY, gateway_dict, root=root)
+        if isinstance(out, pd.DataFrame):
+            return out
+    except Exception:
+        pass
+    return pd.DataFrame()
+
+
+def _is_inteldesk_subset_relevant(question: str, subset_df: pd.DataFrame) -> bool:
+    """Lightweight relevance gate to avoid grounded calls on mismatched subsets."""
+    if subset_df is None or not isinstance(subset_df, pd.DataFrame) or subset_df.empty:
+        return False
+    q = _normalize_text(question)
+    cols = {str(c).strip().lower() for c in subset_df.columns}
+
+    if any(k in q for k in ("flow", "flows", "inflow", "outflow", "nnb", "nnf")):
+        if not ({"nnb", "nnf"} & cols):
+            return False
+    if any(k in q for k in ("aum", "asset", "assets")):
+        if not ({"end_aum", "begin_aum"} & cols):
+            return False
+    if "growth" in q and "ogr" not in cols:
+        return False
+    if "country" in q and not ({"country", "src_country"} & cols):
+        return False
+    if "channel" in q and not ({"channel", "sub_channel"} & cols):
+        return False
+    return True
+
+
+def _is_inteldesk_answer_grounded(answer: str, context_markdown: str, subset_df: pd.DataFrame) -> bool:
+    """Lightweight post-check for obvious unsupported grounded answers."""
+    if not (answer or "").strip():
+        return False
+    if not (context_markdown or "").strip():
+        return False
+    if subset_df is None or not isinstance(subset_df, pd.DataFrame) or subset_df.empty:
+        return False
+
+    cols = {str(c).strip().lower() for c in subset_df.columns}
+    text = _normalize_text(answer)
+    required_by_phrase = {
+        "nnb": {"nnb"},
+        "nnf": {"nnf"},
+        "ogr": {"ogr"},
+        "organic growth": {"ogr"},
+        "end aum": {"end_aum"},
+        "begin aum": {"begin_aum"},
+        "aum": {"end_aum", "begin_aum"},
+        "country": {"country", "src_country"},
+        "channel": {"channel", "sub_channel"},
+    }
+    for phrase, needed_cols in required_by_phrase.items():
+        if phrase in text and not (needed_cols & cols):
+            return False
+
+    has_numeric_claim = bool(re.search(r"(?<!\w)(?:\$?\d[\d,]*(?:\.\d+)?%?)(?!\w)", answer or ""))
+    has_numeric_metrics = bool({"nnb", "nnf", "end_aum", "begin_aum", "ogr"} & cols)
+    if has_numeric_claim and not has_numeric_metrics:
+        return False
+
+    return True
 
 
 def _execute_data_query_service(
@@ -870,9 +957,9 @@ def _render_intelligence_desk_v2(state: FilterState, contract: dict[str, Any]) -
     st.markdown("<div class='inteldesk-examples-label'>Example prompts</div>", unsafe_allow_html=True)
     st.markdown("<div class='inteldesk-examples-row' aria-hidden='true'></div>", unsafe_allow_html=True)
     examples = [
-        "What are the key macro drivers for rates this week?",
-        "Summarize ETF flow trends and likely positioning implications.",
-        "What risks should a multi-asset PM monitor over the next month?",
+        "Which ETF had the highest inflow this month?",
+        "Summarize ETF flow trends from the data.",
+        "Which channel or country has the most AUM?",
     ]
     ecols = st.columns(3)
     for idx, ex in enumerate(examples):
@@ -907,6 +994,7 @@ def _render_intelligence_desk_v2(state: FilterState, contract: dict[str, Any]) -
     if clear_clicked:
         st.session_state[INTEL_CHAT_HISTORY_KEY] = []
         st.session_state[INTEL_CHAT_INPUT_KEY] = ""
+        st.session_state.pop(INTEL_LAST_SUBSET_DF_KEY, None)
         st.rerun()
 
     history: list[dict[str, str]] = st.session_state.get(INTEL_CHAT_HISTORY_KEY) or []
@@ -914,18 +1002,56 @@ def _render_intelligence_desk_v2(state: FilterState, contract: dict[str, Any]) -
 
     if run_clicked and user_text:
         history.append({"role": "user", "text": user_text})
-        if not provider_status.enabled:
+        st.session_state[INTEL_LAST_SUBSET_DF_KEY] = pd.DataFrame()
+        subset_df: pd.DataFrame = pd.DataFrame()
+        if not provider_status.enabled or not claude_generate_grounded:
             history.append({"role": "assistant", "text": "Provider unavailable."})
         else:
-            try:
-                with st.spinner("Generating response..."):
-                    answer = generate_chat_reply(history)
-                history.append({"role": "assistant", "text": (answer or "").strip() or "No response returned."})
-            except ChatProviderError as e:
-                err_msg = (str(e) or "Request failed.").strip()
-                history.append({"role": "assistant", "text": err_msg})
-            except Exception:
-                history.append({"role": "assistant", "text": "Request failed."})
+            gateway_dict = filter_state_to_gateway_dict(state)
+            gateway_json = json.dumps(gateway_dict, sort_keys=True, default=str)
+            df_raw = _load_intelligence_desk_df(gateway_json, str(ROOT))
+            subset_df, context_markdown = retrieve_intelligence_desk_context(user_text, df_raw)
+            if subset_df.empty or not context_markdown:
+                answer = "Data not available in the current dataset."
+                st.session_state[INTEL_LAST_SUBSET_DF_KEY] = pd.DataFrame()
+            elif not _is_inteldesk_subset_relevant(user_text, subset_df):
+                answer = "Data not available for this specific question in the current dataset."
+                st.session_state[INTEL_LAST_SUBSET_DF_KEY] = pd.DataFrame()
+            else:
+                system_prompt = (
+                    "You are a financial data analyst operating inside the Intelligence Desk of an ETF analytics platform.\n\n"
+                    "Your task is to answer the user's question ONLY using the dataset context provided below.\n\n"
+                    "Rules:\n"
+                    "- Do not use outside knowledge.\n"
+                    "- Do not invent values.\n"
+                    "- Do not guess missing fields.\n"
+                    "- If the answer is not available in the dataset, say: 'Data not available in the current dataset.'\n"
+                    "- If the dataset only partially answers the question, clearly explain the limitation.\n"
+                    "- Provide concise analyst-style responses.\n"
+                    "- Highlight ranking or drivers when visible in the data.\n\n"
+                    "Dataset context:\n\n"
+                    f"{context_markdown}"
+                )
+                claude_success = False
+                try:
+                    with st.spinner("Generating response..."):
+                        answer = claude_generate_grounded(
+                            system_prompt,
+                            user_text,
+                            model=INTEL_DESK_MODEL,
+                            max_tokens=1000,
+                        )
+                        claude_success = True
+                except (ChatProviderError, ClaudeError) as e:
+                    answer = (str(getattr(e, "message", e)) or "Request failed.").strip()
+                except Exception:
+                    answer = "Request failed."
+                if claude_success and _is_inteldesk_answer_grounded(answer, context_markdown, subset_df):
+                    st.session_state[INTEL_LAST_SUBSET_DF_KEY] = subset_df
+                elif claude_success:
+                    answer = "Unable to generate a sufficiently grounded answer from the available dataset."
+                    st.session_state[INTEL_LAST_SUBSET_DF_KEY] = pd.DataFrame()
+            history.append({"role": "assistant", "text": (answer or "").strip() or "No response returned."})
         st.session_state[INTEL_CHAT_HISTORY_KEY] = history
 
     history = st.session_state.get(INTEL_CHAT_HISTORY_KEY) or []
@@ -943,6 +1069,10 @@ def _render_intelligence_desk_v2(state: FilterState, contract: dict[str, Any]) -
             if last_assistant:
                 st.markdown("<div class='inteldesk-response-anchor' aria-hidden='true'></div>", unsafe_allow_html=True)
                 st.markdown(last_assistant.get("text", ""))
+                last_subset = st.session_state.get(INTEL_LAST_SUBSET_DF_KEY)
+                if last_subset is not None and isinstance(last_subset, pd.DataFrame) and not last_subset.empty:
+                    st.markdown("### Data used for analysis")
+                    st.dataframe(last_subset, use_container_width=True)
             else:
                 st.markdown(
                     "<div class='inteldesk-response-placeholder'>Awaiting response.</div>",
