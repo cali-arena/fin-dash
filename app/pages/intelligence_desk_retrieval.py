@@ -11,32 +11,37 @@ import pandas as pd
 
 
 # Keywords → preferred column sets (only columns that exist will be used).
+# Order matters: first matching keyword wins. Include both canonical and alias
+# column names so the function works regardless of which query was loaded.
 _QUESTION_KEYWORD_COLUMNS: dict[str, list[str]] = {
-    "aum": ["product_ticker", "ticker", "end_aum", "channel", "country", "month_end"],
-    "flow": ["product_ticker", "ticker", "nnb", "nnf", "channel", "country"],
-    "flows": ["product_ticker", "ticker", "nnb", "nnf", "channel", "country"],
-    "inflow": ["product_ticker", "ticker", "nnb", "channel", "country"],
-    "outflow": ["product_ticker", "ticker", "nnb", "nnf", "channel", "country"],
-    "nnb": ["product_ticker", "ticker", "nnb", "channel", "country", "month_end"],
-    "nnf": ["product_ticker", "ticker", "nnf", "channel", "country"],
-    "ticker": ["product_ticker", "ticker", "nnb", "end_aum", "channel", "country"],
-    "etf": ["product_ticker", "ticker", "nnb", "end_aum", "channel", "country"],
-    "channel": ["channel", "product_ticker", "ticker", "nnb", "end_aum", "country"],
-    "country": ["country", "src_country", "product_ticker", "ticker", "nnb", "end_aum"],
-    "growth": ["product_ticker", "ticker", "nnb", "end_aum", "channel", "country", "ogr"],
-    "performance": ["product_ticker", "ticker", "end_aum", "nnb", "channel", "country"],
-    "return": ["product_ticker", "ticker", "end_aum", "nnb", "channel", "country"],
-    "risk": ["product_ticker", "ticker", "end_aum", "nnb", "channel", "country"],
-    "segment": ["segment", "sub_segment", "product_ticker", "ticker", "nnb", "end_aum"],
-    "asset class": ["segment", "channel", "product_ticker", "ticker", "nnb", "end_aum"],
+    "net new business": ["product_ticker", "ticker", "nnb", "channel", "geo", "src_country", "country", "month_end"],
+    "aum":              ["product_ticker", "ticker", "end_aum", "channel", "geo", "src_country", "country", "month_end"],
+    "inflow":           ["product_ticker", "ticker", "nnb", "channel", "geo", "src_country", "country"],
+    "outflow":          ["product_ticker", "ticker", "nnb", "nnf", "channel", "geo", "src_country", "country"],
+    "flow":             ["product_ticker", "ticker", "nnb", "nnf", "channel", "geo", "src_country", "country"],
+    "flows":            ["product_ticker", "ticker", "nnb", "nnf", "channel", "geo", "src_country", "country"],
+    "nnb":              ["product_ticker", "ticker", "nnb", "channel", "geo", "src_country", "country", "month_end"],
+    "nnf":              ["product_ticker", "ticker", "nnf", "channel", "geo", "src_country", "country"],
+    "etf":              ["product_ticker", "ticker", "nnb", "end_aum", "channel", "geo", "src_country", "country"],
+    "ticker":           ["product_ticker", "ticker", "nnb", "end_aum", "channel", "geo", "src_country", "country"],
+    "country":          ["geo", "src_country", "country", "product_ticker", "ticker", "nnb", "end_aum"],
+    "region":           ["geo", "src_country", "country", "product_ticker", "ticker", "nnb", "end_aum"],
+    "channel":          ["channel", "sub_channel", "product_ticker", "ticker", "nnb", "end_aum"],
+    "growth":           ["product_ticker", "ticker", "nnb", "end_aum", "ogr", "channel", "geo", "src_country", "country"],
+    "performance":      ["product_ticker", "ticker", "end_aum", "nnb", "channel"],
+    "return":           ["product_ticker", "ticker", "end_aum", "nnb", "channel"],
+    "risk":             ["product_ticker", "ticker", "end_aum", "nnb", "channel"],
+    "segment":          ["segment", "sub_segment", "product_ticker", "ticker", "nnb", "end_aum"],
+    "asset class":      ["segment", "channel", "product_ticker", "ticker", "nnb", "end_aum"],
 }
 
 # Fallback when no keyword matches.
 _DEFAULT_COLUMNS = [
-    "product_ticker", "ticker", "channel", "country", "nnb", "end_aum", "month_end",
+    "product_ticker", "ticker", "channel", "geo", "src_country", "country",
+    "nnb", "end_aum", "month_end",
 ]
 
-_MAX_ROWS = 100
+_MAX_ROWS = 30
 
 
 def _normalize_question(q: str) -> str:
@@ -75,37 +80,41 @@ def retrieve_intelligence_desk_context(
     if not chosen:
         chosen = [c for c in _DEFAULT_COLUMNS if c in available]
     if not chosen:
-        chosen = [c for c in work.columns[:10]]
+        # last-resort: first 10 available columns
+        chosen = list(work.columns[:10])
 
-    subset = work[[c for c in chosen if c in work.columns]]
+    subset = work[[c for c in chosen if c in work.columns]].copy()
     if subset.empty:
         return pd.DataFrame(), ""
 
+    # Drop rows that are entirely null.
     subset = subset.dropna(how="all", axis=0)
+    # Drop rows where ALL metric columns are null (keeps rows with at least one metric).
     metric_cols = [c for c in ("nnb", "nnf", "end_aum", "ogr") if c in subset.columns]
     if metric_cols:
         subset = subset.dropna(subset=metric_cols, how="all")
     if subset.empty:
         return pd.DataFrame(), ""
 
-    # Prefer rows with more non-null values (optional: sort by relevance)
-    sort_col = None
+    # Sort by the most relevant metric, descending by default.
+    sort_col: str | None = None
     sort_ascending = False
-    if "nnb" in subset.columns and any(k in q for k in ("outflow", "redemption", "withdrawal", "withdraw")):
-        sort_col = "nnb"
-        sort_ascending = True
-    elif "nnb" in subset.columns and any(k in q for k in ("nnb", "flow", "flows", "inflow")):
-        sort_col = "nnb"
-        sort_ascending = False
-    elif "end_aum" in subset.columns and ("aum" in q or "asset" in q):
-        sort_col = "end_aum"
-        sort_ascending = False
-    elif "ogr" in subset.columns and "growth" in q:
-        sort_col = "ogr"
-        sort_ascending = False
+    q_has_outflow = any(k in q for k in ("outflow", "redemption", "withdrawal", "worst", "lowest"))
+    q_has_nnb = any(k in q for k in ("nnb", "flow", "flows", "inflow", "net new business"))
+    q_has_aum = any(k in q for k in ("aum", "asset", "assets", "largest", "biggest"))
+    q_has_growth = "growth" in q
+
+    if "nnb" in subset.columns and q_has_outflow:
+        sort_col, sort_ascending = "nnb", True
+    elif "nnb" in subset.columns and q_has_nnb:
+        sort_col, sort_ascending = "nnb", False
+    elif "end_aum" in subset.columns and q_has_aum:
+        sort_col, sort_ascending = "end_aum", False
+    elif "ogr" in subset.columns and q_has_growth:
+        sort_col, sort_ascending = "ogr", False
+
     if sort_col and sort_col in subset.columns:
         try:
-            subset = subset.copy()
             subset["_sort_"] = pd.to_numeric(subset[sort_col], errors="coerce")
             subset = subset.sort_values("_sort_", ascending=sort_ascending, na_position="last").drop(columns=["_sort_"])
         except Exception:

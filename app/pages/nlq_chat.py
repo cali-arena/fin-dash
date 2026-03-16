@@ -20,7 +20,7 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-from app.data.data_gateway import Q_CHANNEL_MONTHLY, Q_TICKER_MONTHLY, run_query
+from app.data.data_gateway import Q_CHANNEL_MONTHLY, Q_GEO_MONTHLY, Q_TICKER_MONTHLY, run_query
 from app.pages.intelligence_desk_retrieval import retrieve_intelligence_desk_context
 from app.nlq.deterministic_summary import build_deterministic_summary
 from app.nlq.executor import QueryResult, execute_queryspec
@@ -353,55 +353,110 @@ def _load_value_catalog(gateway_dict: dict[str, Any], root: Path) -> dict[str, s
 
 
 @st.cache_data(ttl=300, show_spinner=False)
-def _load_intelligence_desk_df(gateway_dict_json: str, root_str: str) -> pd.DataFrame:
+def _load_intelligence_desk_df(gateway_dict_json: str, root_str: str, prefer_geo: bool = False) -> pd.DataFrame:
     """
-    Load platform dataset for Intelligence Desk (ticker then channel fallback).
-    Cached by filter state to avoid reloading on every question.
+    Load platform dataset for Intelligence Desk.
+    - prefer_geo=True: try Q_GEO_MONTHLY first (country/region questions).
+    - Falls back through ticker → channel → empty-filters variants.
+    Cached by (gateway_dict_json, root_str, prefer_geo).
     """
     try:
         gateway_dict = json.loads(gateway_dict_json)
     except Exception:
         gateway_dict = {}
     root = Path(root_str) if root_str else ROOT
-    try:
-        out = run_query(Q_TICKER_MONTHLY, gateway_dict, root=root)
-        if isinstance(out, pd.DataFrame) and not out.empty:
-            return out
-    except Exception:
-        pass
-    try:
-        out = run_query(Q_CHANNEL_MONTHLY, gateway_dict, root=root)
-        if isinstance(out, pd.DataFrame):
-            return out
-    except Exception:
-        pass
+    query_order = (
+        [Q_GEO_MONTHLY, Q_TICKER_MONTHLY, Q_CHANNEL_MONTHLY]
+        if prefer_geo
+        else [Q_TICKER_MONTHLY, Q_CHANNEL_MONTHLY, Q_GEO_MONTHLY]
+    )
+    for q_name in query_order:
+        try:
+            out = run_query(q_name, gateway_dict, root=root)
+            if isinstance(out, pd.DataFrame) and not out.empty:
+                logger.debug(
+                    "[IntelDesk] _load_intelligence_desk_df query=%s prefer_geo=%s rows=%d cols=%s",
+                    q_name, prefer_geo, len(out), list(out.columns[:10]),
+                )
+                return out
+        except Exception:
+            pass
+    # Last resort: try with an empty filter dict to get any available data.
+    for q_name in query_order:
+        try:
+            out = run_query(q_name, {}, root=root)
+            if isinstance(out, pd.DataFrame) and not out.empty:
+                logger.debug(
+                    "[IntelDesk] _load_intelligence_desk_df fallback empty-filter query=%s rows=%d",
+                    q_name, len(out),
+                )
+                return out
+        except Exception:
+            pass
+    logger.warning("[IntelDesk] _load_intelligence_desk_df returned empty for prefer_geo=%s", prefer_geo)
     return pd.DataFrame()
 
 
+# Refusal phrases Claude returns when it sees no real data context.
+_CLAUDE_REFUSAL_FRAGMENTS = (
+    "don't have access",
+    "do not have access",
+    "no access to",
+    "not have access",
+    "cannot access",
+    "can't access",
+    "i have no data",
+    "no dataset",
+    "no data available",
+    "not provided",
+    "not available in the context",
+    "not included in",
+    "unable to provide",
+    "don't have information",
+    "do not have information",
+    "cannot provide",
+    "can't provide",
+    "based on my training",
+    "my knowledge",
+    "as an ai",
+    "as a language model",
+)
+
+
 def _is_inteldesk_subset_relevant(question: str, subset_df: pd.DataFrame) -> bool:
-    """Lightweight relevance gate to avoid grounded calls on mismatched subsets."""
+    """
+    Lightweight relevance gate: only block when the subset is clearly missing
+    the columns required to answer the specific question type.
+    """
     if subset_df is None or not isinstance(subset_df, pd.DataFrame) or subset_df.empty:
         return False
     q = _normalize_text(question)
     cols = {str(c).strip().lower() for c in subset_df.columns}
 
-    if any(k in q for k in ("flow", "flows", "inflow", "outflow", "nnb", "nnf")):
+    # Flow/NNB questions need at least one flow metric.
+    if any(k in q for k in ("flow", "flows", "inflow", "outflow", "nnb", "nnf", "net new")):
         if not ({"nnb", "nnf"} & cols):
             return False
-    if any(k in q for k in ("aum", "asset", "assets")):
+    # AUM questions need an AUM column.
+    if any(k in q for k in ("aum", "assets under management")):
         if not ({"end_aum", "begin_aum"} & cols):
             return False
-    if "growth" in q and "ogr" not in cols:
-        return False
-    if "country" in q and not ({"country", "src_country"} & cols):
-        return False
+    # Country questions need a geography column (any variant).
+    if any(k in q for k in ("country", "countries", "region", "geographic")):
+        if not ({"country", "src_country", "geo"} & cols):
+            return False
+    # Channel questions need a channel column.
     if "channel" in q and not ({"channel", "sub_channel"} & cols):
         return False
+    # Note: "growth" is NOT a hard gate — the subset may still be useful with NNB/AUM.
     return True
 
 
 def _is_inteldesk_answer_grounded(answer: str, context_markdown: str, subset_df: pd.DataFrame) -> bool:
-    """Lightweight post-check for obvious unsupported grounded answers."""
+    """
+    Return False if the answer is clearly a generic/refusal response from Claude
+    rather than an answer grounded in the dataset context.
+    """
     if not (answer or "").strip():
         return False
     if not (context_markdown or "").strip():
@@ -409,26 +464,10 @@ def _is_inteldesk_answer_grounded(answer: str, context_markdown: str, subset_df:
     if subset_df is None or not isinstance(subset_df, pd.DataFrame) or subset_df.empty:
         return False
 
-    cols = {str(c).strip().lower() for c in subset_df.columns}
-    text = _normalize_text(answer)
-    required_by_phrase = {
-        "nnb": {"nnb"},
-        "nnf": {"nnf"},
-        "ogr": {"ogr"},
-        "organic growth": {"ogr"},
-        "end aum": {"end_aum"},
-        "begin aum": {"begin_aum"},
-        "aum": {"end_aum", "begin_aum"},
-        "country": {"country", "src_country"},
-        "channel": {"channel", "sub_channel"},
-    }
-    for phrase, needed_cols in required_by_phrase.items():
-        if phrase in text and not (needed_cols & cols):
-            return False
-
-    has_numeric_claim = bool(re.search(r"(?<!\w)(?:\$?\d[\d,]*(?:\.\d+)?%?)(?!\w)", answer or ""))
-    has_numeric_metrics = bool({"nnb", "nnf", "end_aum", "begin_aum", "ogr"} & cols)
-    if has_numeric_claim and not has_numeric_metrics:
+    # Detect standard Claude refusal / no-data phrases.
+    text_lower = (answer or "").lower()
+    if any(frag in text_lower for frag in _CLAUDE_REFUSAL_FRAGMENTS):
+        logger.debug("[IntelDesk] answer_grounded=False (refusal phrase detected)")
         return False
 
     return True
@@ -1007,15 +1046,31 @@ def _render_intelligence_desk_v2(state: FilterState, contract: dict[str, Any]) -
         if not provider_status.enabled or not claude_generate_grounded:
             history.append({"role": "assistant", "text": "Provider unavailable."})
         else:
+            # Detect country/geo questions so the right query table is loaded.
+            _q_lower = user_text.lower()
+            _prefer_geo = any(k in _q_lower for k in ("country", "countries", "region", "geographic", "geo"))
             gateway_dict = filter_state_to_gateway_dict(state)
             gateway_json = json.dumps(gateway_dict, sort_keys=True, default=str)
-            df_raw = _load_intelligence_desk_df(gateway_json, str(ROOT))
+            df_raw = _load_intelligence_desk_df(gateway_json, str(ROOT), prefer_geo=_prefer_geo)
+            logger.debug(
+                "[IntelDesk] question=%r prefer_geo=%s df_raw_shape=%s df_raw_cols=%s",
+                user_text[:120],
+                _prefer_geo,
+                getattr(df_raw, "shape", None),
+                list(df_raw.columns[:12]) if not df_raw.empty else [],
+            )
             subset_df, context_markdown = retrieve_intelligence_desk_context(user_text, df_raw)
+            logger.debug(
+                "[IntelDesk] subset rows=%d cols=%s context_len=%d",
+                len(subset_df),
+                list(subset_df.columns),
+                len(context_markdown),
+            )
             if subset_df.empty or not context_markdown:
                 answer = "Data not available in the current dataset."
                 st.session_state[INTEL_LAST_SUBSET_DF_KEY] = pd.DataFrame()
             elif not _is_inteldesk_subset_relevant(user_text, subset_df):
-                answer = "Data not available for this specific question in the current dataset."
+                answer = "The available dataset does not contain the columns needed to answer this specific question."
                 st.session_state[INTEL_LAST_SUBSET_DF_KEY] = pd.DataFrame()
             else:
                 system_prompt = (
@@ -1023,18 +1078,18 @@ def _render_intelligence_desk_v2(state: FilterState, contract: dict[str, Any]) -
                     "Your task is to answer the user's question ONLY using the dataset context provided below.\n\n"
                     "Rules:\n"
                     "- Do not use outside knowledge.\n"
-                    "- Do not invent values.\n"
+                    "- Do not invent values or extrapolate.\n"
                     "- Do not guess missing fields.\n"
-                    "- If the answer is not available in the dataset, say: 'Data not available in the current dataset.'\n"
-                    "- If the dataset only partially answers the question, clearly explain the limitation.\n"
-                    "- Provide concise analyst-style responses.\n"
-                    "- Highlight ranking or drivers when visible in the data.\n\n"
-                    "Dataset context:\n\n"
+                    "- If the answer is not in the dataset, say exactly: 'Data not available in the current dataset.'\n"
+                    "- If the dataset only partially answers the question, explain the limitation.\n"
+                    "- Be concise and analyst-style.\n"
+                    "- Highlight ranking or key drivers visible in the data.\n\n"
+                    "Dataset context (use ONLY this data):\n\n"
                     f"{context_markdown}"
                 )
                 claude_success = False
                 try:
-                    with st.spinner("Generating response..."):
+                    with st.spinner("Analysing dataset..."):
                         answer = claude_generate_grounded(
                             system_prompt,
                             user_text,
@@ -1042,14 +1097,19 @@ def _render_intelligence_desk_v2(state: FilterState, contract: dict[str, Any]) -
                             max_tokens=1000,
                         )
                         claude_success = True
+                        logger.debug("[IntelDesk] Claude call success, answer_len=%d", len(answer))
                 except (ChatProviderError, ClaudeError) as e:
                     answer = (str(getattr(e, "message", e)) or "Request failed.").strip()
-                except Exception:
+                    logger.debug("[IntelDesk] Claude call error: %s", answer)
+                except Exception as _exc:
                     answer = "Request failed."
+                    logger.debug("[IntelDesk] Claude call exception: %s", _exc)
                 if claude_success and _is_inteldesk_answer_grounded(answer, context_markdown, subset_df):
                     st.session_state[INTEL_LAST_SUBSET_DF_KEY] = subset_df
                 elif claude_success:
-                    answer = "Unable to generate a sufficiently grounded answer from the available dataset."
+                    # Claude returned a refusal — tell the user data is insufficient.
+                    logger.debug("[IntelDesk] answer_grounded=False, replacing with unavailable message")
+                    answer = "The dataset does not contain sufficient information to answer this question reliably."
                     st.session_state[INTEL_LAST_SUBSET_DF_KEY] = pd.DataFrame()
             history.append({"role": "assistant", "text": (answer or "").strip() or "No response returned."})
         st.session_state[INTEL_CHAT_HISTORY_KEY] = history
