@@ -69,6 +69,12 @@ INTEL_CHAT_HISTORY_KEY = "inteldesk_chat_history_v3"
 INTEL_CHAT_INPUT_KEY = "inteldesk_chat_input_v3"
 INTEL_LAST_SUBSET_DF_KEY = "inteldesk_last_subset_df"
 
+# Keywords that indicate the question is about the dataset; general questions lack these.
+DATASET_KEYWORDS = [
+    "nnb", "aum", "flow", "flows", "ticker", "etf",
+    "inflow", "outflow", "asset", "month",
+]
+
 
 @dataclass(frozen=True)
 class DataIntentExtraction:
@@ -1069,9 +1075,12 @@ def _render_intelligence_desk_v2(state: FilterState, contract: dict[str, Any]) -
                 list(subset_df.columns),
                 len(context_markdown),
             )
-            # ── Grounded path: dataset context exists and passes relevance gate ──
+            # ── Grounded path: question looks dataset-related and context exists ──
+            question_lower = user_text.lower()
+            question_looks_dataset_related = any(k in question_lower for k in DATASET_KEYWORDS)
             _use_dataset = (
-                not subset_df.empty
+                question_looks_dataset_related
+                and not subset_df.empty
                 and bool(context_markdown)
                 and _is_inteldesk_subset_relevant(user_text, subset_df)
             )
