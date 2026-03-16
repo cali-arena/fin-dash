@@ -1204,21 +1204,20 @@ def _render_intelligence_desk_v2(state: FilterState, contract: dict[str, Any]) -
                         logger.debug("[IntelDesk] grounded call exception: %s", _exc)
                     
                     if claude_success and _is_inteldesk_answer_grounded(answer, context_markdown, subset_df):
-                        # Good grounded answer — keep the dataset table.
+                        # Accepted grounded answer — store subset and set mode.
+                        answer_mode = "grounded_data"
                         st.session_state[INTEL_LAST_SUBSET_DF_KEY] = subset_df
                     else:
-                        # Grounded call failed or returned refusal → fallback to general
-                        logger.debug("[IntelDesk] grounded path failed, falling back to general Claude")
+                        # Grounded call failed or returned a refusal → fallback to general Claude.
+                        logger.debug("[IntelDesk] grounded path failed/refusal, falling back to general Claude")
                         with st.spinner("Thinking..."):
                             answer = claude_generate_general_answer(user_text)
                         st.session_state[INTEL_LAST_SUBSET_DF_KEY] = pd.DataFrame()
                 else:
-                    # Dataset question but no relevant data → use Claude with clarification
-                    logger.debug("[IntelDesk] dataset question but no relevant data, using Claude with clarification")
-                    clarification = "Note: The available dataset doesn't contain specific information to answer this question fully. "
+                    # Dataset question but no relevant data → general Claude, no clarification prefix.
+                    logger.debug("[IntelDesk] dataset question but no relevant data, using general Claude")
                     with st.spinner("Thinking..."):
-                        general_answer = claude_generate_general_answer(user_text)
-                    answer = f"{clarification}\n\n{general_answer}"
+                        answer = claude_generate_general_answer(user_text)
                     st.session_state[INTEL_LAST_SUBSET_DF_KEY] = pd.DataFrame()
             else:
                 # Fallback (should not happen)
@@ -1244,14 +1243,17 @@ def _render_intelligence_desk_v2(state: FilterState, contract: dict[str, Any]) -
             last_assistant = next((m for m in reversed(history) if m.get("role") == "assistant"), None)
             if last_assistant:
                 st.markdown("<div class='inteldesk-response-anchor' aria-hidden='true'></div>", unsafe_allow_html=True)
+                # mode in history is the single source of truth for rendering decisions.
                 mode = last_assistant.get("mode", "claude")
                 mode_label = "Mode: Grounded Data" if mode == "grounded_data" else "Mode: Claude"
                 st.markdown(f"<div class='inteldesk-mode-badge'>{mode_label}</div>", unsafe_allow_html=True)
                 st.markdown(last_assistant.get("text", ""))
-                last_subset = st.session_state.get(INTEL_LAST_SUBSET_DF_KEY)
-                if last_subset is not None and isinstance(last_subset, pd.DataFrame) and not last_subset.empty:
-                    st.markdown("### Data used for analysis")
-                    st.dataframe(last_subset, use_container_width=True)
+                # Only show data table when this specific answer was grounded — never for Claude answers.
+                if mode == "grounded_data":
+                    last_subset = st.session_state.get(INTEL_LAST_SUBSET_DF_KEY)
+                    if last_subset is not None and isinstance(last_subset, pd.DataFrame) and not last_subset.empty:
+                        st.markdown("### Data used for analysis")
+                        st.dataframe(last_subset, use_container_width=True)
             else:
                 st.markdown(
                     "<div class='inteldesk-response-placeholder'>Awaiting response.</div>",
