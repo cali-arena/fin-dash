@@ -19,7 +19,7 @@ def get_anthropic_api_key() -> str | None:
             try:
                 import streamlit as _st
                 if hasattr(_st, "secrets") and _st.secrets is not None:
-                    key = (str((_st.secrets.get("ANTHROPIC_API_KEY") or "")).strip()
+                    key = str((_st.secrets.get("ANTHROPIC_API_KEY") or "")).strip()
             except Exception:
                 pass
         if not key or key == "your-key-here":

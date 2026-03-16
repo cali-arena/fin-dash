@@ -72,7 +72,19 @@ INTEL_LAST_SUBSET_DF_KEY = "inteldesk_last_subset_df"
 # Keywords that indicate the question is about the dataset; general questions lack these.
 DATASET_KEYWORDS = [
     "nnb", "aum", "flow", "flows", "ticker", "etf",
-    "inflow", "outflow", "asset", "month",
+    "inflow", "outflow", "asset", "month", "channel", "country",
+    "segment", "sub-segment", "sub segment", "sub_segment",
+    "sales focus", "sales_focus", "product", "portfolio",
+    "ranking", "top", "highest", "lowest", "compare", "trend",
+    "growth", "performance", "return", "risk", "contributor",
+    "net new", "organic growth", "market impact", "fee yield",
+]
+
+# General/conceptual question indicators
+GENERAL_QUESTION_INDICATORS = [
+    "what is", "what's", "what does", "explain", "define", "meaning of",
+    "how does", "why is", "overview of", "tell me about",
+    "describe", "elaborate on", "clarify",
 ]
 
 
@@ -430,6 +442,67 @@ _CLAUDE_REFUSAL_FRAGMENTS = (
     "as an ai",
     "as a language model",
 )
+
+
+def _classify_intelligence_question(question: str) -> str:
+    """
+    Classify Intelligence Desk questions into:
+    - "general": definitional/conceptual questions
+    - "dataset": questions about specific dataset metrics/entities
+    - "hybrid": references both concept + data
+    
+    Returns one of: "general", "dataset", "hybrid"
+    """
+    q = _normalize_text(question)
+    
+    # Check for general/conceptual question patterns
+    is_general = any(indicator in q for indicator in GENERAL_QUESTION_INDICATORS)
+    
+    # Check for dataset-specific references
+    has_dataset_ref = any(keyword in q for keyword in DATASET_KEYWORDS)
+    
+    # Special case: questions that ask "from the data" or similar
+    asks_from_data = any(phrase in q for phrase in ["from the data", "in the dataset", "based on the data"])
+    
+    # Dataset-specific metrics (definitions should be hybrid)
+    dataset_metrics = ["nnb", "nnf", "aum", "net new", "organic growth", "fee yield"]
+    # General finance terms that happen to be in dataset (definitions should be general)
+    general_finance_terms = ["risk", "market impact", "growth", "performance", "return"]
+    
+    # Check if question contains dataset metrics
+    has_dataset_metric = any(metric in q for metric in dataset_metrics)
+    # Check if question contains only general finance terms (no dataset metrics)
+    has_only_general_terms = (
+        has_dataset_ref and 
+        not has_dataset_metric and
+        all(keyword in general_finance_terms for keyword in DATASET_KEYWORDS if keyword in q)
+    )
+    
+    # Decision logic
+    if not has_dataset_ref and not asks_from_data:
+        # No dataset references at all → general
+        return "general"
+    elif asks_from_data:
+        # Explicitly asks from data → dataset
+        return "dataset"
+    elif has_dataset_ref and not is_general and not has_only_general_terms:
+        # Dataset references but not definitional → dataset
+        # (but not if only general finance terms without dataset metrics)
+        return "dataset"
+    elif has_dataset_metric and is_general:
+        # Dataset metrics + definitional question → hybrid
+        # Example: "Explain what NNB means" (definition of dataset metric)
+        return "hybrid"
+    elif has_dataset_ref and is_general and not has_dataset_metric:
+        # General finance terms + definitional question → general
+        # Example: "Explain the concept of market impact" (general concept)
+        return "general"
+    elif has_only_general_terms:
+        # Only general finance terms without definition → general
+        return "general"
+    else:
+        # Default fallback
+        return "general"
 
 
 def _is_inteldesk_subset_relevant(question: str, subset_df: pd.DataFrame) -> bool:
@@ -972,6 +1045,7 @@ def _inject_nlq_page_css() -> None:
         .inteldesk-response-anchor + div[data-testid="stMarkdown"] { color: #e2e8f0; line-height: 1.55; margin-top: 0.25rem !important; }
         .inteldesk-response-anchor + div[data-testid="stMarkdown"] p { margin-bottom: 0.65rem !important; }
         .inteldesk-response-anchor + div[data-testid="stMarkdown"] p:last-child { margin-bottom: 0 !important; }
+        .inteldesk-mode-badge { font-size: 0.7rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: #8b9dc3; margin-bottom: 0.35rem; }
         @media (max-width: 640px) { .inteldesk-examples-row + div [data-testid="column"] { min-width: 0 !important; } }
         </style>
         """,
@@ -1053,90 +1127,107 @@ def _render_intelligence_desk_v2(state: FilterState, contract: dict[str, Any]) -
         st.session_state[INTEL_LAST_SUBSET_DF_KEY] = pd.DataFrame()
         subset_df: pd.DataFrame = pd.DataFrame()
         if not provider_status.enabled or not claude_generate_grounded:
-            history.append({"role": "assistant", "text": "Provider unavailable."})
+            history.append({"role": "assistant", "text": "Provider unavailable.", "mode": "claude"})
         else:
-            # Detect country/geo questions so the right query table is loaded.
-            _q_lower = user_text.lower()
-            _prefer_geo = any(k in _q_lower for k in ("country", "countries", "region", "geographic", "geo"))
-            gateway_dict = filter_state_to_gateway_dict(state)
-            gateway_json = json.dumps(gateway_dict, sort_keys=True, default=str)
-            df_raw = _load_intelligence_desk_df(gateway_json, str(ROOT), prefer_geo=_prefer_geo)
-            logger.debug(
-                "[IntelDesk] question=%r prefer_geo=%s df_raw_shape=%s df_raw_cols=%s",
-                user_text[:120],
-                _prefer_geo,
-                getattr(df_raw, "shape", None),
-                list(df_raw.columns[:12]) if not df_raw.empty else [],
-            )
-            subset_df, context_markdown = retrieve_intelligence_desk_context(user_text, df_raw)
-            logger.debug(
-                "[IntelDesk] subset rows=%d cols=%s context_len=%d",
-                len(subset_df),
-                list(subset_df.columns),
-                len(context_markdown),
-            )
-            # ── Grounded path: question looks dataset-related and context exists ──
-            question_lower = user_text.lower()
-            question_looks_dataset_related = any(k in question_lower for k in DATASET_KEYWORDS)
-            _use_dataset = (
-                question_looks_dataset_related
-                and not subset_df.empty
-                and bool(context_markdown)
-                and _is_inteldesk_subset_relevant(user_text, subset_df)
-            )
-            if _use_dataset:
-                system_prompt = (
-                    "You are a financial data analyst operating inside the Intelligence Desk of an ETF analytics platform.\n\n"
-                    "Your task is to answer the user's question ONLY using the dataset context provided below.\n\n"
-                    "Rules:\n"
-                    "- Do not use outside knowledge.\n"
-                    "- Do not invent values or extrapolate.\n"
-                    "- Do not guess missing fields.\n"
-                    "- If the answer is not in the dataset, say exactly: 'Data not available in the current dataset.'\n"
-                    "- If the dataset only partially answers the question, explain the limitation.\n"
-                    "- Be concise and analyst-style.\n"
-                    "- Highlight ranking or key drivers visible in the data.\n\n"
-                    "Dataset context (use ONLY this data):\n\n"
-                    f"{context_markdown}"
+            answer_mode = "claude"
+            # ── Classify question type FIRST to avoid unnecessary data loading ──
+            question_type = _classify_intelligence_question(user_text)
+            logger.debug("[IntelDesk] question_type=%s", question_type)
+            
+            if question_type == "general":
+                # General/conceptual question → use Claude directly, no dataset needed
+                logger.debug("[IntelDesk] general question, using Claude directly (no dataset load)")
+                with st.spinner("Thinking..."):
+                    answer = claude_generate_general_answer(user_text)
+                # Ensure no dataset table is shown for general questions
+                st.session_state[INTEL_LAST_SUBSET_DF_KEY] = pd.DataFrame()
+                
+            elif question_type in ("dataset", "hybrid"):
+                # Dataset-related question → load data and check relevance
+                _q_lower = user_text.lower()
+                _prefer_geo = any(k in _q_lower for k in ("country", "countries", "region", "geographic", "geo"))
+                gateway_dict = filter_state_to_gateway_dict(state)
+                gateway_json = json.dumps(gateway_dict, sort_keys=True, default=str)
+                df_raw = _load_intelligence_desk_df(gateway_json, str(ROOT), prefer_geo=_prefer_geo)
+                logger.debug(
+                    "[IntelDesk] dataset question, df_raw_shape=%s df_raw_cols=%s",
+                    getattr(df_raw, "shape", None),
+                    list(df_raw.columns[:12]) if not df_raw.empty else [],
                 )
-                claude_success = False
-                try:
-                    with st.spinner("Analysing dataset..."):
-                        answer = claude_generate_grounded(
-                            system_prompt,
-                            user_text,
-                            model=INTEL_DESK_MODEL,
-                            max_tokens=1000,
-                        )
-                        claude_success = True
-                        logger.debug("[IntelDesk] grounded call success, answer_len=%d", len(answer))
-                except (ChatProviderError, ClaudeError) as e:
-                    answer = (str(getattr(e, "message", e)) or "Request failed.").strip()
-                    logger.debug("[IntelDesk] grounded call error: %s", answer)
-                except Exception as _exc:
-                    answer = "Request failed."
-                    logger.debug("[IntelDesk] grounded call exception: %s", _exc)
-                if claude_success and _is_inteldesk_answer_grounded(answer, context_markdown, subset_df):
-                    # Good grounded answer — keep the dataset table.
-                    st.session_state[INTEL_LAST_SUBSET_DF_KEY] = subset_df
-                elif claude_success:
-                    # Grounded call returned a refusal — fall back to general Claude.
-                    logger.debug("[IntelDesk] grounded answer is a refusal, falling back to general Claude")
+                subset_df, context_markdown = retrieve_intelligence_desk_context(user_text, df_raw)
+                logger.debug(
+                    "[IntelDesk] subset rows=%d cols=%s context_len=%d",
+                    len(subset_df),
+                    list(subset_df.columns),
+                    len(context_markdown),
+                )
+                
+                # Check if we have relevant data
+                has_relevant_data = (
+                    not subset_df.empty
+                    and bool(context_markdown)
+                    and _is_inteldesk_subset_relevant(user_text, subset_df)
+                )
+                
+                if has_relevant_data:
+                    # We have relevant dataset context → use grounded Claude
+                    system_prompt = (
+                        "You are a financial data analyst operating inside the Intelligence Desk of an ETF analytics platform.\n\n"
+                        "Your task is to answer the user's question ONLY using the dataset context provided below.\n\n"
+                        "Rules:\n"
+                        "- Do not use outside knowledge.\n"
+                        "- Do not invent values or extrapolate.\n"
+                        "- Do not guess missing fields.\n"
+                        "- If the answer is not in the dataset, say exactly: 'Data not available in the current dataset.'\n"
+                        "- If the dataset only partially answers the question, explain the limitation.\n"
+                        "- Be concise and analyst-style.\n"
+                        "- Highlight ranking or key drivers visible in the data.\n\n"
+                        "Dataset context (use ONLY this data):\n\n"
+                        f"{context_markdown}"
+                    )
+                    claude_success = False
+                    try:
+                        with st.spinner("Analysing dataset..."):
+                            answer = claude_generate_grounded(
+                                system_prompt,
+                                user_text,
+                                model=INTEL_DESK_MODEL,
+                                max_tokens=1000,
+                            )
+                            claude_success = True
+                            logger.debug("[IntelDesk] grounded call success, answer_len=%d", len(answer))
+                    except (ChatProviderError, ClaudeError) as e:
+                        answer = (str(getattr(e, "message", e)) or "Request failed.").strip()
+                        logger.debug("[IntelDesk] grounded call error: %s", answer)
+                    except Exception as _exc:
+                        answer = "Request failed."
+                        logger.debug("[IntelDesk] grounded call exception: %s", _exc)
+                    
+                    if claude_success and _is_inteldesk_answer_grounded(answer, context_markdown, subset_df):
+                        # Good grounded answer — keep the dataset table.
+                        st.session_state[INTEL_LAST_SUBSET_DF_KEY] = subset_df
+                    else:
+                        # Grounded call failed or returned refusal → fallback to general
+                        logger.debug("[IntelDesk] grounded path failed, falling back to general Claude")
+                        with st.spinner("Thinking..."):
+                            answer = claude_generate_general_answer(user_text)
+                        st.session_state[INTEL_LAST_SUBSET_DF_KEY] = pd.DataFrame()
+                else:
+                    # Dataset question but no relevant data → use Claude with clarification
+                    logger.debug("[IntelDesk] dataset question but no relevant data, using Claude with clarification")
+                    clarification = "Note: The available dataset doesn't contain specific information to answer this question fully. "
                     with st.spinner("Thinking..."):
-                        answer = claude_generate_general_answer(user_text)
+                        general_answer = claude_generate_general_answer(user_text)
+                    answer = f"{clarification}\n\n{general_answer}"
                     st.session_state[INTEL_LAST_SUBSET_DF_KEY] = pd.DataFrame()
             else:
-                # ── General fallback: no usable dataset context → ask Claude directly ──
-                logger.debug(
-                    "[IntelDesk] no dataset context (subset_empty=%s context_empty=%s relevant=%s), using general Claude",
-                    subset_df.empty,
-                    not bool(context_markdown),
-                    _is_inteldesk_subset_relevant(user_text, subset_df) if not subset_df.empty else False,
-                )
+                # Fallback (should not happen)
+                logger.warning("[IntelDesk] unknown question_type=%s, using general Claude", question_type)
                 with st.spinner("Thinking..."):
                     answer = claude_generate_general_answer(user_text)
                 st.session_state[INTEL_LAST_SUBSET_DF_KEY] = pd.DataFrame()
-            history.append({"role": "assistant", "text": (answer or "").strip() or "No response returned."})
+            
+            history.append({"role": "assistant", "text": (answer or "").strip() or "No response returned.", "mode": answer_mode})
         st.session_state[INTEL_CHAT_HISTORY_KEY] = history
 
     history = st.session_state.get(INTEL_CHAT_HISTORY_KEY) or []
@@ -1153,6 +1244,9 @@ def _render_intelligence_desk_v2(state: FilterState, contract: dict[str, Any]) -
             last_assistant = next((m for m in reversed(history) if m.get("role") == "assistant"), None)
             if last_assistant:
                 st.markdown("<div class='inteldesk-response-anchor' aria-hidden='true'></div>", unsafe_allow_html=True)
+                mode = last_assistant.get("mode", "claude")
+                mode_label = "Mode: Grounded Data" if mode == "grounded_data" else "Mode: Claude"
+                st.markdown(f"<div class='inteldesk-mode-badge'>{mode_label}</div>", unsafe_allow_html=True)
                 st.markdown(last_assistant.get("text", ""))
                 last_subset = st.session_state.get(INTEL_LAST_SUBSET_DF_KEY)
                 if last_subset is not None and isinstance(last_subset, pd.DataFrame) and not last_subset.empty:
