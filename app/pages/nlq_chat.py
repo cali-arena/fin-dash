@@ -21,7 +21,10 @@ import plotly.express as px
 import streamlit as st
 
 from app.data.data_gateway import Q_CHANNEL_MONTHLY, Q_GEO_MONTHLY, Q_TICKER_MONTHLY, run_query
-from app.pages.intelligence_desk_retrieval import retrieve_intelligence_desk_context
+from app.pages.intelligence_desk_retrieval import (
+    claude_generate_general_answer,
+    retrieve_intelligence_desk_context,
+)
 from app.nlq.deterministic_summary import build_deterministic_summary
 from app.nlq.executor import QueryResult, execute_queryspec
 from app.nlq.governance import GovernanceError, load_dim_registry, load_metric_registry, validate_queryspec
@@ -1066,13 +1069,13 @@ def _render_intelligence_desk_v2(state: FilterState, contract: dict[str, Any]) -
                 list(subset_df.columns),
                 len(context_markdown),
             )
-            if subset_df.empty or not context_markdown:
-                answer = "Data not available in the current dataset."
-                st.session_state[INTEL_LAST_SUBSET_DF_KEY] = pd.DataFrame()
-            elif not _is_inteldesk_subset_relevant(user_text, subset_df):
-                answer = "The available dataset does not contain the columns needed to answer this specific question."
-                st.session_state[INTEL_LAST_SUBSET_DF_KEY] = pd.DataFrame()
-            else:
+            # ── Grounded path: dataset context exists and passes relevance gate ──
+            _use_dataset = (
+                not subset_df.empty
+                and bool(context_markdown)
+                and _is_inteldesk_subset_relevant(user_text, subset_df)
+            )
+            if _use_dataset:
                 system_prompt = (
                     "You are a financial data analyst operating inside the Intelligence Desk of an ETF analytics platform.\n\n"
                     "Your task is to answer the user's question ONLY using the dataset context provided below.\n\n"
@@ -1097,20 +1100,33 @@ def _render_intelligence_desk_v2(state: FilterState, contract: dict[str, Any]) -
                             max_tokens=1000,
                         )
                         claude_success = True
-                        logger.debug("[IntelDesk] Claude call success, answer_len=%d", len(answer))
+                        logger.debug("[IntelDesk] grounded call success, answer_len=%d", len(answer))
                 except (ChatProviderError, ClaudeError) as e:
                     answer = (str(getattr(e, "message", e)) or "Request failed.").strip()
-                    logger.debug("[IntelDesk] Claude call error: %s", answer)
+                    logger.debug("[IntelDesk] grounded call error: %s", answer)
                 except Exception as _exc:
                     answer = "Request failed."
-                    logger.debug("[IntelDesk] Claude call exception: %s", _exc)
+                    logger.debug("[IntelDesk] grounded call exception: %s", _exc)
                 if claude_success and _is_inteldesk_answer_grounded(answer, context_markdown, subset_df):
+                    # Good grounded answer — keep the dataset table.
                     st.session_state[INTEL_LAST_SUBSET_DF_KEY] = subset_df
                 elif claude_success:
-                    # Claude returned a refusal — tell the user data is insufficient.
-                    logger.debug("[IntelDesk] answer_grounded=False, replacing with unavailable message")
-                    answer = "The dataset does not contain sufficient information to answer this question reliably."
+                    # Grounded call returned a refusal — fall back to general Claude.
+                    logger.debug("[IntelDesk] grounded answer is a refusal, falling back to general Claude")
+                    with st.spinner("Thinking..."):
+                        answer = claude_generate_general_answer(user_text)
                     st.session_state[INTEL_LAST_SUBSET_DF_KEY] = pd.DataFrame()
+            else:
+                # ── General fallback: no usable dataset context → ask Claude directly ──
+                logger.debug(
+                    "[IntelDesk] no dataset context (subset_empty=%s context_empty=%s relevant=%s), using general Claude",
+                    subset_df.empty,
+                    not bool(context_markdown),
+                    _is_inteldesk_subset_relevant(user_text, subset_df) if not subset_df.empty else False,
+                )
+                with st.spinner("Thinking..."):
+                    answer = claude_generate_general_answer(user_text)
+                st.session_state[INTEL_LAST_SUBSET_DF_KEY] = pd.DataFrame()
             history.append({"role": "assistant", "text": (answer or "").strip() or "No response returned."})
         st.session_state[INTEL_CHAT_HISTORY_KEY] = history
 

@@ -130,3 +130,31 @@ def retrieve_intelligence_desk_context(
         context_markdown = subset.to_string(index=False)
 
     return subset, context_markdown or ""
+
+
+# Model used for general (non-dataset) answers; same as Intelligence Desk tab.
+_INTEL_DESK_MODEL = "claude-haiku-4-5"
+
+
+def claude_generate_general_answer(question: str) -> str:
+    """
+    Fallback when dataset retrieval is empty: call Claude for a general
+    analyst-style answer. Uses the same Claude client as the rest of the app.
+    """
+    question = (question or "").strip()
+    if not question:
+        return "Please ask a question."
+    try:
+        from app.services.claude_client import claude_generate
+    except Exception:
+        return "Claude is not available. Try a question that can be answered from the dataset."
+    prompt = (
+        "You are a financial markets analyst.\n\n"
+        "Answer the user question clearly and concisely.\n\n"
+        f"Question:\n{question}"
+    )
+    try:
+        return claude_generate(prompt=prompt, model=_INTEL_DESK_MODEL, max_tokens=1000)
+    except Exception as e:
+        msg = getattr(e, "message", str(e)) or "Request failed."
+        return f"Unable to get a general answer: {msg}."
