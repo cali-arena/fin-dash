@@ -71,7 +71,7 @@ INTEL_DESK_MODE_KEY = "inteldesk_mode"
 INTEL_DATA_SCOPE_KEY = "inteldesk_data_scope"
 INTEL_FORMAT_STYLE_KEY = "inteldesk_format_style"
 
-# Answer modes for the mode selector (Auto = infer best approach; backend stays dataset_qa | claude_analyst | market_intelligence)
+# Answer modes: UI exposes only two choices; backend still uses dataset_qa | claude_analyst (market_intelligence/auto not in UI)
 INTEL_MODE_AUTO = "auto"
 INTEL_MODE_DATASET_QA = "dataset_qa"
 INTEL_MODE_CLAUDE_ANALYST = "claude_analyst"
@@ -83,6 +83,12 @@ INTEL_MODES = [
     ("External market view", INTEL_MODE_MARKET_INTEL),
 ]
 INTEL_MODE_LABELS = {value: label for label, value in INTEL_MODES}
+# Simplified UI: two buttons only; labels for metadata row
+INTEL_UI_TWO_MODES = [INTEL_MODE_DATASET_QA, INTEL_MODE_CLAUDE_ANALYST]
+INTEL_UI_MODE_LABELS = {
+    INTEL_MODE_DATASET_QA: "Use my data",
+    INTEL_MODE_CLAUDE_ANALYST: "Use AI (Claude)",
+}
 
 # Data scope for Dataset Q&A
 INTEL_SCOPE_CURRENT = "current_filtered"
@@ -322,9 +328,11 @@ def _build_intelligence_metadata_payload(message: dict[str, Any]) -> dict[str, s
     scope_source = message.get("scope_used")
     if scope_source in (None, ""):
         scope_source = message.get("source_scope")
+    mode_label_ui = INTEL_UI_MODE_LABELS.get(resolved_mode) or _get_intelligence_mode_label(resolved_mode)
     return {
         "requested_mode": requested_mode,
         "resolved_mode": resolved_mode,
+        "mode_label_ui": mode_label_ui,
         "format_style": _normalize_intelligence_format_style(message.get("format_style")),
         "scope_used": _get_scope_reminder_text(
             resolved_mode,
@@ -337,14 +345,11 @@ def _build_intelligence_metadata_payload(message: dict[str, Any]) -> dict[str, s
 
 def _render_intelligence_metadata_row(message: dict[str, Any]) -> None:
     metadata = _build_intelligence_metadata_payload(message)
+    mode_label = metadata.get("mode_label_ui") or INTEL_UI_MODE_LABELS.get(
+        metadata.get("resolved_mode"), _get_intelligence_mode_label(metadata["resolved_mode"])
+    )
     st.markdown(
-        (
-            f"**Requested:** {_get_intelligence_mode_label(metadata['requested_mode'])} | "
-            f"**Resolved:** {_get_intelligence_mode_label(metadata['resolved_mode'])} | "
-            f"**Format:** {_get_intelligence_format_label(metadata['format_style'])} | "
-            f"**Scope used:** {metadata['scope_used']} | "
-            f"**Grounded:** {metadata['grounded']}"
-        )
+        f"**Mode:** {mode_label} · **Scope:** {metadata['scope_used']} · **Grounded:** {metadata['grounded']}"
     )
 
 
@@ -1822,7 +1827,7 @@ def _render_intelligence_desk_v2(state: FilterState, contract: dict[str, Any]) -
     _inject_nlq_page_css()
     st.title("Intelligence Desk")
     st.markdown(
-        "<div class='inteldesk-subtitle'>Dataset Q&A and Claude Analyst use your selected internal data scope. Market Intelligence uses external context only.</div>",
+        "<div class='inteldesk-subtitle'>Both modes use your selected internal data scope.</div>",
         unsafe_allow_html=True,
     )
     provider_status = get_provider_status()
@@ -1836,22 +1841,34 @@ def _render_intelligence_desk_v2(state: FilterState, contract: dict[str, Any]) -
 
     if INTEL_DESK_MODE_KEY not in st.session_state:
         st.session_state[INTEL_DESK_MODE_KEY] = INTEL_MODE_DATASET_QA
+    if st.session_state[INTEL_DESK_MODE_KEY] not in INTEL_UI_TWO_MODES:
+        st.session_state[INTEL_DESK_MODE_KEY] = INTEL_MODE_DATASET_QA
     if INTEL_DATA_SCOPE_KEY not in st.session_state:
         st.session_state[INTEL_DATA_SCOPE_KEY] = INTEL_SCOPE_CURRENT
     if INTEL_FORMAT_STYLE_KEY not in st.session_state:
         st.session_state[INTEL_FORMAT_STYLE_KEY] = INTEL_FORMAT_STANDARD
 
-    mode_values = [val for _, val in INTEL_MODES]
-    st.radio(
-        "Answer mode",
-        options=mode_values,
-        index=0,
-        key=INTEL_DESK_MODE_KEY,
-        horizontal=True,
-        format_func=lambda v: INTEL_MODE_LABELS.get(v, v),
-    )
-    if st.session_state[INTEL_DESK_MODE_KEY] not in mode_values:
-        st.session_state[INTEL_DESK_MODE_KEY] = INTEL_MODE_AUTO
+    st.markdown("**How should I answer?**")
+    btn_col1, btn_col2 = st.columns(2)
+    with btn_col1:
+        use_data = st.button(
+            "📊 Use my data",
+            key="inteldesk_btn_use_data",
+            type="primary" if st.session_state[INTEL_DESK_MODE_KEY] == INTEL_MODE_DATASET_QA else "secondary",
+        )
+    with btn_col2:
+        use_ai = st.button(
+            "🤖 Use AI (Claude)",
+            key="inteldesk_btn_use_ai",
+            type="primary" if st.session_state[INTEL_DESK_MODE_KEY] == INTEL_MODE_CLAUDE_ANALYST else "secondary",
+        )
+    if use_data:
+        st.session_state[INTEL_DESK_MODE_KEY] = INTEL_MODE_DATASET_QA
+        st.rerun()
+    if use_ai:
+        st.session_state[INTEL_DESK_MODE_KEY] = INTEL_MODE_CLAUDE_ANALYST
+        st.rerun()
+    st.caption("Use my data → answers strictly from your dataset. Use AI → generates a narrative explanation.")
     scope_values = [val for _, val in INTEL_SCOPES]
     st.selectbox(
         "Data scope",
@@ -1872,22 +1889,10 @@ def _render_intelligence_desk_v2(state: FilterState, contract: dict[str, Any]) -
     )
     if st.session_state[INTEL_FORMAT_STYLE_KEY] not in format_values:
         st.session_state[INTEL_FORMAT_STYLE_KEY] = INTEL_FORMAT_STANDARD
-    current_mode = st.session_state.get(INTEL_DESK_MODE_KEY, INTEL_MODE_AUTO)
+    current_mode = st.session_state.get(INTEL_DESK_MODE_KEY, INTEL_MODE_DATASET_QA)
     current_scope = st.session_state.get(INTEL_DATA_SCOPE_KEY, INTEL_SCOPE_CURRENT)
     current_format = st.session_state.get(INTEL_FORMAT_STYLE_KEY, INTEL_FORMAT_STANDARD)
-    if current_mode == INTEL_MODE_MARKET_INTEL:
-        st.caption("Market Intelligence does not read the internal dataset. The data scope selector applies to the two internal-data modes only.")
-    elif current_mode == INTEL_MODE_AUTO:
-        st.caption(
-            "Auto will resolve transparently. If it chooses an internal-data mode, it will use: "
-            f"{_get_scope_reminder_text(INTEL_MODE_DATASET_QA, current_scope, drill_state=get_drill_state())}"
-        )
-    else:
-        st.caption(f"Internal data source: {_get_scope_reminder_text(current_mode, current_scope, drill_state=get_drill_state())}")
-    st.caption(
-        f"Response format is presentation-only: {_get_intelligence_format_label(current_format)}. "
-        "It does not change routing or mode resolution."
-    )
+    st.caption(f"Internal data source: {_get_scope_reminder_text(current_mode, current_scope, drill_state=get_drill_state())}")
 
     st.markdown("<div class='inteldesk-examples-label'>Example prompts</div>", unsafe_allow_html=True)
     st.markdown("<div class='inteldesk-examples-row' aria-hidden='true'></div>", unsafe_allow_html=True)
@@ -1938,24 +1943,25 @@ def _render_intelligence_desk_v2(state: FilterState, contract: dict[str, Any]) -
     if run_clicked and user_text:
         history.append({"role": "user", "text": user_text})
         st.session_state[INTEL_LAST_SUBSET_DF_KEY] = pd.DataFrame()
-        current_mode = st.session_state.get(INTEL_DESK_MODE_KEY, INTEL_MODE_AUTO)
+        selected_mode = st.session_state.get(INTEL_DESK_MODE_KEY, INTEL_MODE_DATASET_QA)
+        if selected_mode not in INTEL_UI_TWO_MODES:
+            selected_mode = INTEL_MODE_DATASET_QA
         current_scope = st.session_state.get(INTEL_DATA_SCOPE_KEY, INTEL_SCOPE_CURRENT)
         current_format = st.session_state.get(INTEL_FORMAT_STYLE_KEY, INTEL_FORMAT_STANDARD)
         drill_state = get_drill_state()
         df_load, filtered_load = _load_intelligence_desk_df_by_scope(current_scope, state, ROOT)
-        resolution = resolve_intelligence_mode(user_text, current_mode, df_load)
-        with st.spinner("Thinking..." if resolution.resolved_mode == INTEL_MODE_MARKET_INTEL else "Analysing data..."):
+        with st.spinner("Analysing data..."):
             out = answer_intelligence_desk(
                 user_text,
-                resolution.resolved_mode,
+                selected_mode,
                 df_load,
                 filtered_load,
-                requested_mode=resolution.requested_mode,
+                requested_mode=selected_mode,
                 source_scope=current_scope,
-                resolution=resolution,
+                resolution=None,
             )
         answer_text = (out.get("answer") or "").strip() or "No response returned."
-        result_mode = out.get("resolved_mode", resolution.resolved_mode)
+        result_mode = out.get("resolved_mode", selected_mode)
         subset_result = out.get("subset_df")
         if isinstance(subset_result, pd.DataFrame) and not subset_result.empty and result_mode in INTEL_INTERNAL_MODES:
             st.session_state[INTEL_LAST_SUBSET_DF_KEY] = subset_result
