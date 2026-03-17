@@ -71,23 +71,25 @@ INTEL_DESK_MODE_KEY = "inteldesk_mode"
 INTEL_DATA_SCOPE_KEY = "inteldesk_data_scope"
 INTEL_FORMAT_STYLE_KEY = "inteldesk_format_style"
 
-# Answer modes: UI exposes only two choices; backend still uses dataset_qa | claude_analyst (market_intelligence/auto not in UI)
+# Answer modes
 INTEL_MODE_AUTO = "auto"
 INTEL_MODE_DATASET_QA = "dataset_qa"
 INTEL_MODE_CLAUDE_ANALYST = "claude_analyst"
 INTEL_MODE_MARKET_INTEL = "market_intelligence"
+INTEL_MODE_AI_GENERAL = "ai_general"
 INTEL_MODES = [
     ("Auto", INTEL_MODE_AUTO),
     ("From your data", INTEL_MODE_DATASET_QA),
     ("Analyst narrative from your data", INTEL_MODE_CLAUDE_ANALYST),
     ("External market view", INTEL_MODE_MARKET_INTEL),
+    ("Use AI (Claude)", INTEL_MODE_AI_GENERAL),
 ]
 INTEL_MODE_LABELS = {value: label for label, value in INTEL_MODES}
-# Simplified UI: two buttons only; labels for metadata row
-INTEL_UI_TWO_MODES = [INTEL_MODE_DATASET_QA, INTEL_MODE_CLAUDE_ANALYST]
+# Simplified UI: two buttons only
+INTEL_UI_TWO_MODES = [INTEL_MODE_DATASET_QA, INTEL_MODE_AI_GENERAL]
 INTEL_UI_MODE_LABELS = {
     INTEL_MODE_DATASET_QA: "Use my data",
-    INTEL_MODE_CLAUDE_ANALYST: "Use AI (Claude)",
+    INTEL_MODE_AI_GENERAL: "Use AI (Claude)",
 }
 
 # Data scope for Dataset Q&A
@@ -277,6 +279,8 @@ def _get_scope_reminder_text(
         return "Not executed"
     if mode == INTEL_MODE_MARKET_INTEL:
         return "N/A"
+    if mode == INTEL_MODE_AI_GENERAL:
+        return "AI (general knowledge)"
     if mode not in INTEL_INTERNAL_MODES:
         return "N/A"
     normalized_scope = _normalize_scope_value(scope_value)
@@ -417,6 +421,8 @@ def _build_intelligence_assistant_message(
         "source_label": (
             "Source: internal dataset"
             if out.get("source") == "internal_dataset"
+            else "Source: AI (Claude)"
+            if out.get("source") == "ai_general"
             else "Source: external market context"
             if out.get("source") == "external_market"
             else "Source: not executed | Clarification required"
@@ -1194,6 +1200,45 @@ def answer_intelligence_desk(
         result["clarification_options"] = _get_intelligence_clarification_options()
         return result
 
+    if resolved_mode == INTEL_MODE_AI_GENERAL:
+        result["source"] = "ai_general"
+        result["source_scope"] = "N/A"
+        if not claude_generate:
+            result["answer"] = "AI mode is currently unavailable. You can still use 'Use my data' to get answers from your dataset."
+            result["error"] = "Claude unavailable"
+            return result
+        dataset_hint = ""
+        if work_df is not None and not work_df.empty:
+            try:
+                subset_df, context_md = retrieve_intelligence_desk_context(question, work_df)
+                if not subset_df.empty and context_md and _is_inteldesk_subset_relevant(question, subset_df):
+                    dataset_hint = (
+                        "\n\nThe user also has an internal dataset loaded. "
+                        "Here is relevant context from it (use only if the question benefits from it):\n\n"
+                        f"{context_md}"
+                    )
+                    result["subset_df"] = subset_df
+                    result["grounded"] = True
+            except Exception:
+                pass
+        prompt = (
+            "You are a helpful AI assistant specializing in finance and investment analytics.\n\n"
+            "Rules:\n"
+            "- Answer the user's question clearly and concisely.\n"
+            "- You may use general financial knowledge.\n"
+            "- If dataset context is provided below, you may reference it when relevant, "
+            "but you are not limited to it.\n"
+            "- Do not invent specific numbers unless they come from the dataset context.\n"
+            f"{dataset_hint}\n\n"
+            f"Question: {question}"
+        )
+        try:
+            result["answer"] = claude_generate(prompt=prompt, model=INTEL_DESK_MODEL, max_tokens=1000)
+        except Exception as e:
+            result["answer"] = f"AI request failed: {getattr(e, 'message', str(e))}."
+            result["error"] = str(e)
+        return result
+
     if resolved_mode == INTEL_MODE_MARKET_INTEL:
         boundary_message = _market_mode_boundary_message(question)
         if boundary_message:
@@ -1800,6 +1845,8 @@ def _inject_nlq_page_css() -> None:
         .inteldesk-examples-row + div [data-testid="column"] .stButton button { background: rgba(23,40,77,0.6) !important; color: #e2e8f0 !important; border: 1px solid #2a3d67 !important; border-radius: 8px !important; padding: 0.5rem 0.65rem !important; font-size: 0.85rem !important; text-align: left !important; min-height: 2.5rem; }
         .inteldesk-examples-row + div [data-testid="column"] .stButton button:hover { border-color: #4c7edb !important; background: rgba(23,40,77,0.85) !important; }
         .inteldesk-divider { height: 1px; background: #2a3d67; margin: 0.6rem 0 0.5rem 0 !important; }
+        .inteldesk-mode-selector-label { font-size: 0.82rem; font-weight: 600; color: #b7c5e3; margin-bottom: 0.3rem !important; }
+        .inteldesk-mode-selector-row + div [data-testid="column"] .stButton button { min-height: 2.6rem; font-size: 0.9rem !important; border-radius: 8px !important; }
         .inteldesk-response-placeholder { color: #8b9dc3; font-size: 0.85rem; padding: 0.75rem 0; }
         .inteldesk-response-anchor + div[data-testid="stMarkdown"] { color: #e2e8f0; line-height: 1.55; margin-top: 0.25rem !important; }
         .inteldesk-response-anchor + div[data-testid="stMarkdown"] p { margin-bottom: 0.65rem !important; }
@@ -1822,12 +1869,12 @@ def render(state: FilterState, contract: dict[str, Any]) -> None:
 
 
 def _render_intelligence_desk_v2(state: FilterState, contract: dict[str, Any]) -> None:
-    """Intelligence Desk: mode-based analytics assistant (Dataset Q&A, Claude Analyst, Market Intelligence)."""
+    """Intelligence Desk: two-mode analytics assistant (Use my data / Use AI)."""
     _ = contract
     _inject_nlq_page_css()
     st.title("Intelligence Desk")
     st.markdown(
-        "<div class='inteldesk-subtitle'>Both modes use your selected internal data scope.</div>",
+        "<div class='inteldesk-subtitle'>Ask one focused question and get a concise analyst response.</div>",
         unsafe_allow_html=True,
     )
     provider_status = get_provider_status()
@@ -1847,6 +1894,44 @@ def _render_intelligence_desk_v2(state: FilterState, contract: dict[str, Any]) -
         st.session_state[INTEL_DATA_SCOPE_KEY] = INTEL_SCOPE_CURRENT
     if INTEL_FORMAT_STYLE_KEY not in st.session_state:
         st.session_state[INTEL_FORMAT_STYLE_KEY] = INTEL_FORMAT_STANDARD
+
+    st.markdown("<div class='inteldesk-examples-label'>Example prompts</div>", unsafe_allow_html=True)
+    st.markdown("<div class='inteldesk-examples-row' aria-hidden='true'></div>", unsafe_allow_html=True)
+    examples = [
+        "Which ETF had the highest NNB in the data?",
+        "Summarize flow trends from the dataset.",
+        "Which channel or country has the most AUM?",
+    ]
+    ecols = st.columns(3)
+    for idx, ex in enumerate(examples):
+        with ecols[idx]:
+            if st.button(ex, key=f"inteldesk_ex_{idx}", width="stretch"):
+                st.session_state[INTEL_CHAT_INPUT_KEY] = ex
+
+    st.markdown("<div class='inteldesk-divider'></div>", unsafe_allow_html=True)
+    st.markdown("<div class='inteldesk-mode-selector-label'>How should I answer?</div>", unsafe_allow_html=True)
+    st.markdown("<div class='inteldesk-mode-selector-row'></div>", unsafe_allow_html=True)
+    btn_col1, btn_col2 = st.columns(2)
+    with btn_col1:
+        use_data = st.button(
+            "📊 Use my data",
+            key="inteldesk_btn_use_data",
+            type="primary" if st.session_state[INTEL_DESK_MODE_KEY] == INTEL_MODE_DATASET_QA else "secondary",
+            use_container_width=True,
+        )
+    with btn_col2:
+        use_ai = st.button(
+            "🤖 Use AI (Claude)",
+            key="inteldesk_btn_use_ai",
+            type="primary" if st.session_state[INTEL_DESK_MODE_KEY] == INTEL_MODE_AI_GENERAL else "secondary",
+            use_container_width=True,
+        )
+    if use_data:
+        st.session_state[INTEL_DESK_MODE_KEY] = INTEL_MODE_DATASET_QA
+        st.rerun()
+    if use_ai:
+        st.session_state[INTEL_DESK_MODE_KEY] = INTEL_MODE_AI_GENERAL
+        st.rerun()
 
     scope_values = [val for _, val in INTEL_SCOPES]
     st.selectbox(
@@ -1868,54 +1953,20 @@ def _render_intelligence_desk_v2(state: FilterState, contract: dict[str, Any]) -
     )
     if st.session_state[INTEL_FORMAT_STYLE_KEY] not in format_values:
         st.session_state[INTEL_FORMAT_STYLE_KEY] = INTEL_FORMAT_STANDARD
+
     current_mode = st.session_state.get(INTEL_DESK_MODE_KEY, INTEL_MODE_DATASET_QA)
     current_scope = st.session_state.get(INTEL_DATA_SCOPE_KEY, INTEL_SCOPE_CURRENT)
     current_format = st.session_state.get(INTEL_FORMAT_STYLE_KEY, INTEL_FORMAT_STANDARD)
-    st.caption(f"Internal data source: {_get_scope_reminder_text(current_mode, current_scope, drill_state=get_drill_state())}")
-
-    st.markdown("<div class='inteldesk-examples-label'>Example prompts</div>", unsafe_allow_html=True)
-    st.markdown("<div class='inteldesk-examples-row' aria-hidden='true'></div>", unsafe_allow_html=True)
-    examples = [
-        "Which ETF had the highest NNB in the data?",
-        "Summarize flow trends from the dataset.",
-        "Which channel or country has the most AUM?",
-    ]
-    ecols = st.columns(3)
-    for idx, ex in enumerate(examples):
-        with ecols[idx]:
-            if st.button(ex, key=f"inteldesk_ex_{idx}", width="stretch"):
-                st.session_state[INTEL_CHAT_INPUT_KEY] = ex
 
     if INTEL_CHAT_HISTORY_KEY not in st.session_state:
         st.session_state[INTEL_CHAT_HISTORY_KEY] = []
     if INTEL_CHAT_INPUT_KEY not in st.session_state:
         st.session_state[INTEL_CHAT_INPUT_KEY] = ""
 
-    st.markdown("<div class='inteldesk-divider'></div>", unsafe_allow_html=True)
-    st.markdown("**How should I answer?**")
-    btn_col1, btn_col2 = st.columns(2)
-    with btn_col1:
-        use_data = st.button(
-            "📊 Use my data",
-            key="inteldesk_btn_use_data",
-            type="primary" if st.session_state[INTEL_DESK_MODE_KEY] == INTEL_MODE_DATASET_QA else "secondary",
-        )
-    with btn_col2:
-        use_ai = st.button(
-            "🤖 Use AI (Claude)",
-            key="inteldesk_btn_use_ai",
-            type="primary" if st.session_state[INTEL_DESK_MODE_KEY] == INTEL_MODE_CLAUDE_ANALYST else "secondary",
-        )
-    if use_data:
-        st.session_state[INTEL_DESK_MODE_KEY] = INTEL_MODE_DATASET_QA
-        st.rerun()
-    if use_ai:
-        st.session_state[INTEL_DESK_MODE_KEY] = INTEL_MODE_CLAUDE_ANALYST
-        st.rerun()
     prompt = st.text_area(
         "Message",
         key=INTEL_CHAT_INPUT_KEY,
-        placeholder="Ask a question about your data...",
+        placeholder="Ask a question...",
         height=100,
     )
     user_text = (prompt or "").strip()
@@ -1949,7 +2000,8 @@ def _render_intelligence_desk_v2(state: FilterState, contract: dict[str, Any]) -
         current_format = st.session_state.get(INTEL_FORMAT_STYLE_KEY, INTEL_FORMAT_STANDARD)
         drill_state = get_drill_state()
         df_load, filtered_load = _load_intelligence_desk_df_by_scope(current_scope, state, ROOT)
-        with st.spinner("Analysing data..."):
+        spinner_text = "Thinking..." if selected_mode == INTEL_MODE_AI_GENERAL else "Analysing data..."
+        with st.spinner(spinner_text):
             out = answer_intelligence_desk(
                 user_text,
                 selected_mode,
@@ -1962,7 +2014,11 @@ def _render_intelligence_desk_v2(state: FilterState, contract: dict[str, Any]) -
         answer_text = (out.get("answer") or "").strip() or "No response returned."
         result_mode = out.get("resolved_mode", selected_mode)
         subset_result = out.get("subset_df")
-        if isinstance(subset_result, pd.DataFrame) and not subset_result.empty and result_mode in INTEL_INTERNAL_MODES:
+        is_grounded_result = (
+            isinstance(subset_result, pd.DataFrame) and not subset_result.empty
+            and (result_mode in INTEL_INTERNAL_MODES or out.get("grounded"))
+        )
+        if is_grounded_result:
             st.session_state[INTEL_LAST_SUBSET_DF_KEY] = subset_result
         else:
             st.session_state[INTEL_LAST_SUBSET_DF_KEY] = pd.DataFrame()
@@ -2010,7 +2066,8 @@ def _render_intelligence_desk_v2(state: FilterState, contract: dict[str, Any]) -
                     last_assistant.get("resolved_mode", last_assistant.get("mode")),
                     fallback=INTEL_MODE_CLAUDE_ANALYST,
                 )
-                if mode in INTEL_INTERNAL_MODES:
+                show_subset = mode in INTEL_INTERNAL_MODES or last_assistant.get("grounded") in (True, "Yes")
+                if show_subset:
                     last_subset = st.session_state.get(INTEL_LAST_SUBSET_DF_KEY)
                     if last_subset is not None and isinstance(last_subset, pd.DataFrame) and not last_subset.empty:
                         st.markdown("### Data used for analysis")
