@@ -22,7 +22,6 @@ import streamlit as st
 
 from app.data.data_gateway import Q_CHANNEL_MONTHLY, Q_GEO_MONTHLY, Q_TICKER_MONTHLY, run_query
 from app.pages.intelligence_desk_retrieval import (
-    claude_generate_general_answer,
     retrieve_intelligence_desk_context,
 )
 from app.nlq.deterministic_summary import build_deterministic_summary
@@ -30,7 +29,7 @@ from app.nlq.executor import QueryResult, execute_queryspec
 from app.nlq.governance import GovernanceError, load_dim_registry, load_metric_registry, validate_queryspec
 from app.nlq.market_search import search_market_context
 from app.nlq.parser import ParseError, parse_nlq
-from app.state import FilterState, filter_state_to_gateway_dict
+from app.state import FilterState, filter_state_to_gateway_dict, get_drill_state
 from app.nlq.executor import EXECUTOR_TIMEOUT_MS
 from app.ui.formatters import fmt_percent, format_df, infer_common_formats
 from app.ui.exports import render_export_buttons
@@ -68,6 +67,46 @@ INTEL_DESK_MODEL = "claude-haiku-4-5"
 INTEL_CHAT_HISTORY_KEY = "inteldesk_chat_history_v3"
 INTEL_CHAT_INPUT_KEY = "inteldesk_chat_input_v3"
 INTEL_LAST_SUBSET_DF_KEY = "inteldesk_last_subset_df"
+INTEL_DESK_MODE_KEY = "inteldesk_mode"
+INTEL_DATA_SCOPE_KEY = "inteldesk_data_scope"
+INTEL_FORMAT_STYLE_KEY = "inteldesk_format_style"
+
+# Answer modes for the mode selector (Auto = infer best approach; backend stays dataset_qa | claude_analyst | market_intelligence)
+INTEL_MODE_AUTO = "auto"
+INTEL_MODE_DATASET_QA = "dataset_qa"
+INTEL_MODE_CLAUDE_ANALYST = "claude_analyst"
+INTEL_MODE_MARKET_INTEL = "market_intelligence"
+INTEL_MODES = [
+    ("Auto", INTEL_MODE_AUTO),
+    ("From your data", INTEL_MODE_DATASET_QA),
+    ("Analyst narrative from your data", INTEL_MODE_CLAUDE_ANALYST),
+    ("External market view", INTEL_MODE_MARKET_INTEL),
+]
+INTEL_MODE_LABELS = {value: label for label, value in INTEL_MODES}
+
+# Data scope for Dataset Q&A
+INTEL_SCOPE_CURRENT = "current_filtered"
+INTEL_SCOPE_FULL = "full_dataset"
+INTEL_SCOPE_SEGMENT = "selected_segment"
+INTEL_SCOPES = [
+    ("Current filtered view", INTEL_SCOPE_CURRENT),
+    ("Full dataset", INTEL_SCOPE_FULL),
+    ("Selected segment only", INTEL_SCOPE_SEGMENT),
+]
+INTEL_SCOPE_LABELS = {value: label for label, value in INTEL_SCOPES}
+INTEL_SCOPE_KEYS_BY_LABEL = {label: value for label, value in INTEL_SCOPES}
+INTEL_INTERNAL_MODES = {INTEL_MODE_DATASET_QA, INTEL_MODE_CLAUDE_ANALYST}
+
+# Presentation-only response formatting. This must not affect routing or resolved mode.
+INTEL_FORMAT_STANDARD = "standard"
+INTEL_FORMAT_BULLETS = "bullet_summary"
+INTEL_FORMAT_COMPACT = "compact"
+INTEL_FORMATS = [
+    ("Standard", INTEL_FORMAT_STANDARD),
+    ("Bullet summary", INTEL_FORMAT_BULLETS),
+    ("Compact paragraph", INTEL_FORMAT_COMPACT),
+]
+INTEL_FORMAT_LABELS = {value: label for label, value in INTEL_FORMATS}
 
 # Keywords that indicate the question is about the dataset; general questions lack these.
 DATASET_KEYWORDS = [
@@ -86,6 +125,46 @@ GENERAL_QUESTION_INDICATORS = [
     "how does", "why is", "overview of", "tell me about",
     "describe", "elaborate on", "clarify",
 ]
+INTEL_EXPLICIT_MARKET_PHRASES = (
+    "latest outlook",
+    "current outlook",
+    "major asset classes",
+    "rate expectations",
+    "market outlook",
+)
+INTEL_MARKET_TERMS = (
+    "fed", "inflation", "macro", "sentiment", "competitor", "competitors",
+    "market conditions", "rates", "treasury", "ecb", "boe", "geopolitical",
+    "outlook", "news", "external", "policy", "earnings season", "industry",
+    "peer group", "peer groups", "market",
+)
+INTEL_DATA_ROUTE_TERMS = (
+    "nnb", "nnf", "ogr", "market impact", "fee yield", "aum", "channel",
+    "sub-channel", "sub channel", "country", "segment", "sub-segment",
+    "sub segment", "ticker", "etf", "contributors", "flows", "above", "below",
+    "ytd", "qoq", "yoy", "1m",
+)
+INTEL_NARRATIVE_TERMS = (
+    "summarize", "summary", "trend", "trends", "explain", "why", "driver", "drivers",
+    "insight", "insights", "narrative", "interpret", "interpretation", "what changed",
+    "analyze", "analysis", "walk me through", "tell me about",
+)
+INTEL_DIRECT_DATA_TERMS = (
+    "which", "top", "highest", "lowest", "largest", "smallest", "most", "least",
+    "rank", "ranking", "list", "show", "table", "count", "total", "sum",
+    "above", "below", "greater than", "less than", "under", "over",
+)
+INTEL_MIXED_CONNECTORS = (
+    "compare to the market",
+    "compared to the market",
+    "versus the market",
+    "vs the market",
+    "relative to the market",
+    "and the market",
+    "versus peers",
+    "vs peers",
+    "compare with peers",
+)
 
 
 @dataclass(frozen=True)
@@ -106,6 +185,251 @@ class QueryRoute:
     reason: str
 
 
+@dataclass(frozen=True)
+class ModeResolution:
+    requested_mode: str
+    resolved_mode: str
+    reason: str
+    route: str
+    question_shape: str
+    requires_clarification: bool = False
+
+
+def _normalize_intelligence_mode(mode: Any, fallback: str = INTEL_MODE_CLAUDE_ANALYST) -> str:
+    raw = str(mode or "").strip()
+    valid_modes = {value for _, value in INTEL_MODES}
+    return raw if raw in valid_modes else fallback
+
+
+def _get_intelligence_mode_label(mode: Any) -> str:
+    normalized = _normalize_intelligence_mode(mode, fallback=str(mode or INTEL_MODE_CLAUDE_ANALYST))
+    return INTEL_MODE_LABELS.get(normalized, normalized)
+
+
+def _normalize_intelligence_format_style(format_style: Any) -> str:
+    raw = str(format_style or "").strip()
+    valid_styles = {value for _, value in INTEL_FORMATS}
+    return raw if raw in valid_styles else INTEL_FORMAT_STANDARD
+
+
+def _get_intelligence_format_label(format_style: Any) -> str:
+    normalized = _normalize_intelligence_format_style(format_style)
+    return INTEL_FORMAT_LABELS.get(normalized, normalized)
+
+
+def _normalize_scope_value(scope_value: Any) -> str | None:
+    if scope_value is None:
+        return None
+    raw = str(scope_value).strip()
+    if not raw:
+        return None
+    if raw in INTEL_SCOPE_LABELS:
+        return raw
+    return INTEL_SCOPE_KEYS_BY_LABEL.get(raw)
+
+
+def _normalize_grounded_label(grounded: Any) -> str:
+    if isinstance(grounded, bool):
+        return "Yes" if grounded else "No"
+    raw = str(grounded or "").strip().lower()
+    if raw in {"yes", "true", "1"}:
+        return "Yes"
+    if raw in {"no", "false", "0", ""}:
+        return "No"
+    return str(grounded)
+
+
+def _get_intelligence_clarification_options() -> list[dict[str, str]]:
+    return [
+        {
+            "label": INTEL_MODE_LABELS[INTEL_MODE_DATASET_QA],
+            "mode": INTEL_MODE_DATASET_QA,
+            "description": "Answer only from your internal dataset with a direct data response.",
+        },
+        {
+            "label": INTEL_MODE_LABELS[INTEL_MODE_CLAUDE_ANALYST],
+            "mode": INTEL_MODE_CLAUDE_ANALYST,
+            "description": "Give an internal-data narrative grounded only in your dataset.",
+        },
+        {
+            "label": INTEL_MODE_LABELS[INTEL_MODE_MARKET_INTEL],
+            "mode": INTEL_MODE_MARKET_INTEL,
+            "description": "Use external market context only, separate from your internal data.",
+        },
+    ]
+
+
+def _get_scope_reminder_text(
+    resolved_mode: str,
+    scope_value: Any,
+    drill_state: Any | None = None,
+    *,
+    not_executed: bool = False,
+) -> str:
+    mode = _normalize_intelligence_mode(resolved_mode, fallback=str(resolved_mode or INTEL_MODE_CLAUDE_ANALYST))
+    if not_executed:
+        return "Not executed"
+    if mode == INTEL_MODE_MARKET_INTEL:
+        return "N/A"
+    if mode not in INTEL_INTERNAL_MODES:
+        return "N/A"
+    normalized_scope = _normalize_scope_value(scope_value)
+    if normalized_scope == INTEL_SCOPE_SEGMENT:
+        if drill_state is not None:
+            selected_channel = getattr(drill_state, "selected_channel", None)
+            selected_ticker = getattr(drill_state, "selected_ticker", None)
+            if selected_channel:
+                return f"{INTEL_SCOPE_LABELS[INTEL_SCOPE_SEGMENT]} (channel: {selected_channel})"
+            if selected_ticker:
+                return f"{INTEL_SCOPE_LABELS[INTEL_SCOPE_SEGMENT]} (ticker: {selected_ticker})"
+            return f"{INTEL_SCOPE_LABELS[INTEL_SCOPE_SEGMENT]} (no channel or ticker drill-down selected)"
+        return f"{INTEL_SCOPE_LABELS[INTEL_SCOPE_SEGMENT]} (drill selection not recorded)"
+    if normalized_scope is not None:
+        return INTEL_SCOPE_LABELS.get(normalized_scope, normalized_scope)
+    if scope_value is None or str(scope_value).strip() == "":
+        return "Not recorded"
+    return str(scope_value)
+
+
+def format_intelligence_response(answer: str, format_style: Any) -> str:
+    format_style = _normalize_intelligence_format_style(format_style)
+    text = (answer or "").strip()
+    if not text:
+        return ""
+    if format_style == INTEL_FORMAT_STANDARD:
+        return text
+    if any(token in text for token in ("```", "\n- ", "\n* ", "\n1. ", "\n|")):
+        return text
+    if format_style == INTEL_FORMAT_COMPACT:
+        return re.sub(r"\s+", " ", text)
+    sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+(?=[A-Z0-9])", text) if s.strip()]
+    if format_style == INTEL_FORMAT_BULLETS and 1 < len(sentences) <= 8:
+        return "\n".join(f"- {sentence}" for sentence in sentences)
+    return text
+
+
+def _build_intelligence_metadata_payload(message: dict[str, Any]) -> dict[str, str]:
+    resolved_mode = _normalize_intelligence_mode(
+        message.get("resolved_mode", message.get("mode")),
+        fallback=INTEL_MODE_CLAUDE_ANALYST,
+    )
+    requested_mode = _normalize_intelligence_mode(
+        message.get("requested_mode"),
+        fallback=resolved_mode,
+    )
+    requires_clarification = bool(message.get("requires_clarification")) or message.get("error") == "clarification_required"
+    not_executed = requires_clarification or message.get("error") == "not_dataset_question"
+    scope_source = message.get("scope_used")
+    if scope_source in (None, ""):
+        scope_source = message.get("source_scope")
+    return {
+        "requested_mode": requested_mode,
+        "resolved_mode": resolved_mode,
+        "format_style": _normalize_intelligence_format_style(message.get("format_style")),
+        "scope_used": _get_scope_reminder_text(
+            resolved_mode,
+            scope_source,
+            not_executed=not_executed,
+        ),
+        "grounded": _normalize_grounded_label(message.get("grounded")),
+    }
+
+
+def _render_intelligence_metadata_row(message: dict[str, Any]) -> None:
+    metadata = _build_intelligence_metadata_payload(message)
+    st.markdown(
+        (
+            f"**Requested:** {_get_intelligence_mode_label(metadata['requested_mode'])} | "
+            f"**Resolved:** {_get_intelligence_mode_label(metadata['resolved_mode'])} | "
+            f"**Format:** {_get_intelligence_format_label(metadata['format_style'])} | "
+            f"**Scope used:** {metadata['scope_used']} | "
+            f"**Grounded:** {metadata['grounded']}"
+        )
+    )
+
+
+def _render_intelligence_clarification_card(message: dict[str, Any]) -> None:
+    requires_clarification = bool(message.get("requires_clarification")) or message.get("error") == "clarification_required"
+    if not requires_clarification:
+        return
+    original_question = (message.get("original_question") or "").strip()
+    options = message.get("clarification_options")
+    if not isinstance(options, list) or not options:
+        options = _get_intelligence_clarification_options()
+    card_lines = [
+        "**Clarification required**",
+        "This request mixes internal dataset analysis and external market context, so the desk did not merge them into one answer.",
+    ]
+    if original_question:
+        card_lines.append(f"Original question: _{original_question}_")
+    card_lines.append("Choose one path and ask again:")
+    for option in options:
+        label = str(option.get("label") or option.get("mode") or "Option").strip()
+        description = str(option.get("description") or "").strip()
+        if description:
+            card_lines.append(f"- **{label}:** {description}")
+        else:
+            card_lines.append(f"- **{label}**")
+    st.info("\n".join(card_lines))
+
+
+def _build_intelligence_assistant_message(
+    *,
+    question: str,
+    out: dict[str, Any],
+    requested_scope: str,
+    format_style: str,
+    drill_state: Any | None = None,
+) -> dict[str, Any]:
+    requested_mode = out.get("requested_mode") or out.get("mode") or INTEL_MODE_CLAUDE_ANALYST
+    resolved_mode = out.get("resolved_mode") or out.get("mode") or INTEL_MODE_CLAUDE_ANALYST
+    requires_clarification = bool(out.get("requires_clarification")) or out.get("error") == "clarification_required"
+    metadata = _build_intelligence_metadata_payload(
+        {
+            "mode": resolved_mode,
+            "requested_mode": requested_mode,
+            "resolved_mode": resolved_mode,
+            "format_style": format_style,
+            "source_scope": out.get("source_scope", requested_scope),
+            "grounded": out.get("grounded"),
+            "error": out.get("error"),
+            "requires_clarification": requires_clarification,
+        }
+    )
+    if resolved_mode in INTEL_INTERNAL_MODES and not metadata["scope_used"].startswith("Not ") and _normalize_scope_value(out.get("source_scope", requested_scope)) == INTEL_SCOPE_SEGMENT:
+        metadata["scope_used"] = _get_scope_reminder_text(
+            resolved_mode,
+            out.get("source_scope", requested_scope),
+            drill_state=drill_state,
+        )
+    return {
+        "role": "assistant",
+        "text": (out.get("answer") or "").strip() or "No response returned.",
+        "mode": resolved_mode,
+        "requested_mode": requested_mode,
+        "resolved_mode": resolved_mode,
+        "requested_label": _get_intelligence_mode_label(requested_mode),
+        "source_label": (
+            "Source: internal dataset"
+            if out.get("source") == "internal_dataset"
+            else "Source: external market context"
+            if out.get("source") == "external_market"
+            else "Source: not executed | Clarification required"
+        ),
+        "approach_used": _get_intelligence_mode_label(resolved_mode),
+        "format_style": metadata["format_style"],
+        "scope_used": metadata["scope_used"],
+        "grounded": metadata["grounded"],
+        "resolution_reason": out.get("resolution_reason"),
+        "error": out.get("error"),
+        "requires_clarification": requires_clarification,
+        "original_question": out.get("original_question") or question,
+        "clarification_options": out.get("clarification_options") or [],
+        "source_scope": out.get("source_scope", requested_scope),
+        "source": out.get("source"),
+    }
+
+
 def _normalize_text(s: str) -> str:
     return re.sub(r"\s+", " ", (s or "").strip().lower())
 
@@ -118,28 +442,10 @@ def _classify_query_route(text: str) -> QueryRoute:
     - ambiguous: mixed signals; fallback to selected mode
     """
     t = _normalize_text(text)
-    explicit_market_phrases = (
-        "latest outlook",
-        "current outlook",
-        "major asset classes",
-        "rate expectations",
-        "market outlook",
-    )
-    if any(p in t for p in explicit_market_phrases):
+    if any(p in t for p in INTEL_EXPLICIT_MARKET_PHRASES):
         return QueryRoute(route="market_intelligence", reason="question asks for external market outlook")
-    market_terms = (
-        "fed", "inflation", "macro", "sentiment", "competitor", "competitors",
-        "market conditions", "rates", "treasury", "ecb", "boe", "geopolitical",
-        "outlook", "news", "external", "policy", "earnings season",
-    )
-    data_terms = (
-        "nnb", "nnf", "ogr", "market impact", "fee yield", "aum", "channel",
-        "sub-channel", "sub channel", "country", "segment", "sub-segment",
-        "sub segment", "ticker", "etf", "contributors", "flows", "above", "below",
-        "ytd", "qoq", "yoy", "1m",
-    )
-    market_hits = sum(1 for k in market_terms if k in t)
-    data_hits = sum(1 for k in data_terms if k in t)
+    market_hits = sum(1 for k in INTEL_MARKET_TERMS if k in t)
+    data_hits = sum(1 for k in INTEL_DATA_ROUTE_TERMS if k in t)
     if market_hits > 0 and data_hits == 0:
         return QueryRoute(route="market_intelligence", reason="question references external market context")
     if data_hits > 0 and market_hits == 0:
@@ -553,6 +859,454 @@ def _is_inteldesk_answer_grounded(answer: str, context_markdown: str, subset_df:
         return False
 
     return True
+
+
+def _format_inteldesk_value(value: Any) -> str:
+    try:
+        num = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    abs_num = abs(num)
+    if abs_num >= 1_000_000_000:
+        return f"{num / 1_000_000_000:.2f}B"
+    if abs_num >= 1_000_000:
+        return f"{num / 1_000_000:.2f}M"
+    if abs_num >= 1_000:
+        return f"{num / 1_000:.2f}K"
+    if abs_num >= 100:
+        return f"{num:,.0f}"
+    if abs_num >= 1:
+        return f"{num:,.2f}"
+    return f"{num:,.4f}"
+
+
+def _pick_inteldesk_metric_column(question: str, subset_df: pd.DataFrame) -> str | None:
+    q = _normalize_text(question)
+    preferred: list[str] = []
+    if any(k in q for k in ("nnb", "flow", "flows", "inflow", "outflow", "net new business", "net new")):
+        preferred.append("nnb")
+    if any(k in q for k in ("nnf", "net new flow")):
+        preferred.append("nnf")
+    if any(k in q for k in ("aum", "asset", "assets under management")):
+        preferred.append("end_aum")
+    if "organic growth" in q or "ogr" in q or "growth" in q:
+        preferred.append("ogr")
+    preferred.extend(["nnb", "nnf", "end_aum", "ogr", "fee_yield", "market_impact_abs", "begin_aum"])
+    seen: set[str] = set()
+    for col in preferred:
+        if col in seen or col not in subset_df.columns:
+            continue
+        seen.add(col)
+        series = pd.to_numeric(subset_df[col], errors="coerce")
+        if series.notna().any():
+            return col
+    for col in subset_df.columns:
+        series = pd.to_numeric(subset_df[col], errors="coerce")
+        if series.notna().any():
+            return str(col)
+    return None
+
+
+def _pick_inteldesk_entity_columns(question: str, subset_df: pd.DataFrame) -> list[str]:
+    q = _normalize_text(question)
+    candidate_groups: list[list[str]] = []
+    if any(k in q for k in ("ticker", "etf", "product")):
+        candidate_groups.append(["product_ticker", "ticker"])
+    if any(k in q for k in ("channel", "sub-channel", "sub channel")):
+        candidate_groups.append(["channel", "sub_channel"])
+    if any(k in q for k in ("country", "countries", "region", "geographic", "geo")):
+        candidate_groups.append(["src_country", "country", "geo"])
+    if any(k in q for k in ("segment", "sub-segment", "sub segment", "asset class")):
+        candidate_groups.append(["segment", "sub_segment"])
+    candidate_groups.append(["product_ticker", "ticker"])
+    candidate_groups.append(["channel", "sub_channel"])
+    candidate_groups.append(["src_country", "country", "geo"])
+    candidate_groups.append(["segment", "sub_segment"])
+
+    chosen: list[str] = []
+    for group in candidate_groups:
+        for col in group:
+            if col in subset_df.columns and col not in chosen:
+                chosen.append(col)
+        if chosen:
+            break
+    return chosen[:2]
+
+
+def _build_inteldesk_entity_label(row: pd.Series, entity_cols: list[str]) -> str:
+    parts: list[str] = []
+    for col in entity_cols:
+        value = str(row.get(col, "")).strip()
+        if value and value.lower() != "nan":
+            parts.append(value)
+    return " / ".join(parts[:2])
+
+
+def _build_inteldesk_top_entities(
+    subset_df: pd.DataFrame,
+    *,
+    metric_col: str | None,
+    entity_cols: list[str],
+    ascending: bool,
+    limit: int = 3,
+) -> str:
+    if metric_col is None or metric_col not in subset_df.columns:
+        return ""
+    work = subset_df.copy()
+    work["_metric_rank_"] = pd.to_numeric(work[metric_col], errors="coerce")
+    work = work[work["_metric_rank_"].notna()].sort_values("_metric_rank_", ascending=ascending)
+    if work.empty:
+        return ""
+    snippets: list[str] = []
+    for _, row in work.head(limit).iterrows():
+        label = _build_inteldesk_entity_label(row, entity_cols) or "unlabelled row"
+        snippets.append(f"{label} ({_format_inteldesk_value(row['_metric_rank_'])})")
+    return ", ".join(snippets)
+
+
+def _build_inteldesk_deterministic_answer(question: str, subset_df: pd.DataFrame, mode: str) -> str:
+    if subset_df is None or not isinstance(subset_df, pd.DataFrame) or subset_df.empty:
+        return "Data not available in the selected dataset scope for this question."
+
+    q = _normalize_text(question)
+    metric_col = _pick_inteldesk_metric_column(question, subset_df)
+    entity_cols = _pick_inteldesk_entity_columns(question, subset_df)
+    ascending = any(k in q for k in ("lowest", "least", "smallest", "worst", "outflow", "redemption", "withdrawal"))
+
+    if metric_col and metric_col in subset_df.columns:
+        work = subset_df.copy()
+        work["_metric_rank_"] = pd.to_numeric(work[metric_col], errors="coerce")
+        work = work[work["_metric_rank_"].notna()].sort_values("_metric_rank_", ascending=ascending)
+    else:
+        work = subset_df.copy()
+
+    top_row = work.iloc[0] if not work.empty else None
+    top_label = _build_inteldesk_entity_label(top_row, entity_cols) if top_row is not None else ""
+    metric_label = (metric_col or "metric").replace("_", " ")
+    top_value = _format_inteldesk_value(top_row["_metric_rank_"]) if top_row is not None and "_metric_rank_" in work.columns else ""
+    leaders = _build_inteldesk_top_entities(subset_df, metric_col=metric_col, entity_cols=entity_cols, ascending=ascending)
+
+    if mode == INTEL_MODE_CLAUDE_ANALYST:
+        lines = [
+            "Internal dataset readout:",
+            f"- Matching rows in scope: {len(subset_df):,}.",
+        ]
+        if top_label and top_value:
+            direction = "lowest" if ascending else "highest"
+            lines.append(f"- Headline: {direction} {metric_label} is {top_label} ({top_value}).")
+        if leaders:
+            lines.append(f"- Leading {metric_label} values: {leaders}.")
+        lines.append("- Interpretation is constrained to the selected internal dataset scope.")
+        return "\n".join(lines)
+
+    if top_label and top_value and any(k in q for k in ("which", "highest", "top", "most", "largest", "lowest", "least", "smallest", "worst")):
+        direction = "lowest" if ascending else "highest"
+        return f"Based on the selected dataset scope, the {direction} {metric_label} is {top_label} ({top_value})."
+    if leaders:
+        return f"Based on the selected dataset scope, the leading {metric_label} values are {leaders}."
+    return f"I found {len(subset_df):,} matching rows in the selected dataset scope, but there is not enough ranked metric data to answer that precisely."
+
+
+def _internal_mode_boundary_message(question: str) -> str | None:
+    question_shape = _classify_intelligence_question_shape(question)
+    if question_shape == "mixed":
+        return "This request mixes your internal data with external market context. Please split it into two questions, or choose one approach at a time."
+    route = _classify_query_route(question)
+    if route.route == "market_intelligence":
+        return "This mode answers questions from your internal dataset only. Switch to Market Intelligence for external market context."
+    question_class = _classify_intelligence_question(question)
+    if question_class != "dataset":
+        return "This mode does not provide generic finance chat. Ask about flows, AUM, tickers, channels, countries, or trends in the selected dataset scope."
+    return None
+
+
+def _market_mode_boundary_message(question: str) -> str | None:
+    question_shape = _classify_intelligence_question_shape(question)
+    if question_shape == "mixed":
+        return "This request mixes your internal data with external market context. Please split it into two questions, or choose one approach at a time."
+    route = _classify_query_route(question)
+    if route.route == "data_question":
+        return "Market Intelligence uses external market context only and does not answer questions from your internal dataset. Switch to Dataset Q&A or Claude Analyst for questions about your data."
+    return None
+
+
+def _classify_intelligence_question_shape(question: str) -> str:
+    t = _normalize_text(question)
+    asks_from_data = any(p in t for p in ("from the data", "in the dataset", "based on the data", "in the data", "our data", "our dataset"))
+    data_hits = sum(1 for k in INTEL_DATA_ROUTE_TERMS if k in t)
+    market_hits = sum(1 for k in INTEL_MARKET_TERMS if k in t)
+    direct_hits = sum(1 for k in INTEL_DIRECT_DATA_TERMS if k in t)
+    narrative_hits = sum(1 for k in INTEL_NARRATIVE_TERMS if k in t)
+    question_type = _classify_intelligence_question(question)
+    has_mixed_connector = any(k in t for k in INTEL_MIXED_CONNECTORS)
+    has_explicit_market_phrase = any(p in t for p in INTEL_EXPLICIT_MARKET_PHRASES)
+
+    if has_explicit_market_phrase and not asks_from_data:
+        return "market"
+    if has_mixed_connector or (data_hits > 0 and market_hits > 0):
+        return "mixed"
+    if market_hits > 0 and data_hits == 0:
+        return "market"
+    if asks_from_data or data_hits > 0 or question_type in ("dataset", "hybrid"):
+        if narrative_hits > 0 and direct_hits == 0:
+            return "narrative_data"
+        if direct_hits > 0 and narrative_hits == 0:
+            return "direct_data"
+        if narrative_hits > 0:
+            return "narrative_data"
+        return "direct_data"
+    return "ambiguous"
+
+
+def _mixed_intelligence_guidance() -> str:
+    return (
+        "This question mixes internal dataset analysis with external market context. "
+        "Please split it into two questions, or choose one approach explicitly: "
+        "'From your data' / 'Analyst narrative from your data' for internal analysis, "
+        "or 'External market view' for market context."
+    )
+
+
+def resolve_intelligence_mode(question: str, requested_mode: str, df: pd.DataFrame | None = None) -> ModeResolution:
+    """
+    Resolve the actual answer mode when user selects Auto. Conservative rules:
+    - Never use Market Intelligence for internal-data questions.
+    - Prefer Dataset Q&A when the question references data/metrics; fallback to Claude Analyst for narrative.
+    - Only use Market Intelligence when the question clearly asks for external/market context.
+    Returns one of: INTEL_MODE_DATASET_QA, INTEL_MODE_CLAUDE_ANALYST, INTEL_MODE_MARKET_INTEL.
+    """
+    route = _classify_query_route(question)
+    question_shape = _classify_intelligence_question_shape(question)
+    if requested_mode != INTEL_MODE_AUTO:
+        return ModeResolution(
+            requested_mode=requested_mode,
+            resolved_mode=requested_mode,
+            reason="explicit user-selected mode preserved",
+            route=route.route,
+            question_shape=question_shape,
+            requires_clarification=False,
+        )
+
+    if question_shape == "mixed":
+        return ModeResolution(
+            requested_mode=requested_mode,
+            resolved_mode=INTEL_MODE_AUTO,
+            reason="mixed internal-data and external-market intent requires clarification",
+            route=route.route,
+            question_shape=question_shape,
+            requires_clarification=True,
+        )
+    if question_shape == "market" or route.route == "market_intelligence":
+        return ModeResolution(
+            requested_mode=requested_mode,
+            resolved_mode=INTEL_MODE_MARKET_INTEL,
+            reason="question is clearly external-market oriented",
+            route=route.route,
+            question_shape=question_shape,
+            requires_clarification=False,
+        )
+    if question_shape == "narrative_data":
+        return ModeResolution(
+            requested_mode=requested_mode,
+            resolved_mode=INTEL_MODE_CLAUDE_ANALYST,
+            reason="question asks for narrative or interpretive analysis on internal data",
+            route=route.route,
+            question_shape=question_shape,
+            requires_clarification=False,
+        )
+    if question_shape == "direct_data":
+        return ModeResolution(
+            requested_mode=requested_mode,
+            resolved_mode=INTEL_MODE_DATASET_QA,
+            reason="question asks for a direct metric, ranking, or filterable internal-data answer",
+            route=route.route,
+            question_shape=question_shape,
+            requires_clarification=False,
+        )
+    return ModeResolution(
+        requested_mode=requested_mode,
+        resolved_mode=INTEL_MODE_CLAUDE_ANALYST,
+        reason="ambiguous or general question defaults to conservative internal analyst mode",
+        route=route.route,
+        question_shape=question_shape,
+        requires_clarification=False,
+    )
+
+
+def answer_intelligence_desk(
+    question: str,
+    mode: str,
+    df: pd.DataFrame,
+    filtered_df: pd.DataFrame | None = None,
+    *,
+    requested_mode: str | None = None,
+    source_scope: str | None = None,
+    resolution: ModeResolution | None = None,
+) -> dict[str, Any]:
+    """
+    Single entrypoint for Intelligence Desk answers. Returns a dict with:
+    - answer: str
+    - mode: one of "dataset_qa", "claude_analyst", "market_intelligence"
+    - subset_df: DataFrame used for dataset answers (empty for analyst/market)
+    - error: str | None
+    """
+    work_df = filtered_df if filtered_df is not None else df
+    resolved_mode = mode
+    requested_mode = requested_mode or mode
+    source_scope = source_scope or ("N/A" if resolved_mode == INTEL_MODE_MARKET_INTEL else INTEL_SCOPE_CURRENT)
+    result: dict[str, Any] = {
+        "answer": "",
+        "mode": resolved_mode,
+        "requested_mode": requested_mode,
+        "resolved_mode": resolved_mode,
+        "summary_table": None,
+        "subset_df": pd.DataFrame(),
+        "columns_used": [],
+        "row_count": 0,
+        "source_scope": source_scope if resolved_mode in INTEL_INTERNAL_MODES else "N/A",
+        "grounded": False,
+        "error": None,
+        "source": "external_market" if resolved_mode == INTEL_MODE_MARKET_INTEL else "internal_dataset",
+        "resolution_reason": resolution.reason if resolution is not None else None,
+        "requires_clarification": bool(resolution.requires_clarification) if resolution is not None else False,
+        "original_question": None,
+        "clarification_options": [],
+    }
+
+    if resolution is not None and resolution.requires_clarification:
+        result["answer"] = _mixed_intelligence_guidance()
+        result["error"] = "clarification_required"
+        result["source"] = "clarification_required"
+        result["original_question"] = question
+        result["clarification_options"] = _get_intelligence_clarification_options()
+        return result
+
+    if resolved_mode == INTEL_MODE_AUTO:
+        result["answer"] = _mixed_intelligence_guidance()
+        result["error"] = "clarification_required"
+        result["source"] = "clarification_required"
+        result["original_question"] = question
+        result["clarification_options"] = _get_intelligence_clarification_options()
+        return result
+
+    if resolved_mode == INTEL_MODE_MARKET_INTEL:
+        boundary_message = _market_mode_boundary_message(question)
+        if boundary_message:
+            result["answer"] = boundary_message
+            result["error"] = "wrong_mode"
+            return result
+        try:
+            context = search_market_context(question)
+            prompt = (
+                "You are a market intelligence analyst. Provide a concise brief using the context below.\n\n"
+                f"Question: {question}\n\nContext:\n{context}"
+            )
+            if claude_generate:
+                result["answer"] = claude_generate(prompt=prompt, model=INTEL_DESK_MODEL, max_tokens=1000)
+            else:
+                result["answer"] = "Claude is not available."
+                result["error"] = "Claude unavailable"
+        except Exception as e:
+            result["answer"] = f"Market intelligence request failed: {getattr(e, 'message', str(e))}."
+            result["error"] = str(e)
+        return result
+
+    boundary_message = _internal_mode_boundary_message(question)
+    if boundary_message:
+        result["answer"] = boundary_message
+        result["error"] = "not_dataset_question"
+        return result
+
+    if work_df is None or work_df.empty:
+        if filtered_df is not None:
+            result["answer"] = "No rows are available for the selected segment. Select a channel or ticker drill-down, or choose a broader data scope."
+        else:
+            result["answer"] = "No data available for the selected scope."
+        result["error"] = "empty_df"
+        return result
+
+    subset_df, context_markdown = retrieve_intelligence_desk_context(question, work_df)
+    has_relevant = (
+        not subset_df.empty
+        and bool(context_markdown)
+        and _is_inteldesk_subset_relevant(question, subset_df)
+    )
+    if not has_relevant:
+        result["answer"] = "Data not available in the selected dataset scope for this question."
+        result["error"] = "insufficient_context"
+        return result
+
+    result["subset_df"] = subset_df
+    result["columns_used"] = [str(c) for c in subset_df.columns]
+    result["row_count"] = int(len(subset_df))
+    result["grounded"] = True
+    result["summary_table"] = subset_df.head(10).copy()
+    if claude_generate_grounded is None:
+        result["answer"] = _build_inteldesk_deterministic_answer(question, subset_df, resolved_mode)
+        return result
+
+    if resolved_mode == INTEL_MODE_CLAUDE_ANALYST:
+        system_prompt = (
+            "You are a financial analyst reviewing a client's internal dataset.\n\n"
+            "Rules:\n"
+            "- Use only the dataset context below.\n"
+            "- Do not use outside knowledge.\n"
+            "- Do not invent values.\n"
+            "- If the dataset does not support a claim, say so explicitly.\n"
+            "- Provide a short narrative grounded in the data, including observations and caveats.\n\n"
+            f"Dataset context:\n\n{context_markdown}"
+        )
+    else:
+        system_prompt = (
+            "You are a financial data analyst. Answer the user's question ONLY using the dataset context below.\n\n"
+            "Rules:\n"
+            "- Do not use outside knowledge.\n"
+            "- Do not invent values.\n"
+            "- If the answer is not in the dataset, say 'Data not available in the selected dataset scope.'\n"
+            "- Keep the answer direct and data-specific.\n\n"
+            f"Dataset context:\n\n{context_markdown}"
+        )
+    try:
+        answer = claude_generate_grounded(system_prompt, question, model=INTEL_DESK_MODEL, max_tokens=1000)
+        if _is_inteldesk_answer_grounded(answer, context_markdown, subset_df):
+            result["answer"] = answer
+        else:
+            result["answer"] = _build_inteldesk_deterministic_answer(question, subset_df, resolved_mode)
+    except Exception:
+        result["answer"] = _build_inteldesk_deterministic_answer(question, subset_df, resolved_mode)
+    return result
+
+
+def _load_intelligence_desk_df_by_scope(
+    scope: str,
+    state: FilterState,
+    root: Path,
+) -> tuple[pd.DataFrame, pd.DataFrame | None]:
+    """
+    Load dataframe for Intelligence Desk based on data scope.
+    Returns (df, filtered_df). filtered_df is non-None only for selected_segment when drill has a selection.
+    """
+    gateway_dict = filter_state_to_gateway_dict(state)
+    if scope == INTEL_SCOPE_FULL:
+        gateway_dict = {}
+    gateway_json = json.dumps(gateway_dict, sort_keys=True, default=str)
+    df = _load_intelligence_desk_df(gateway_json, str(root), prefer_geo=False)
+    if scope != INTEL_SCOPE_SEGMENT:
+        return df, None
+    drill = get_drill_state()
+    channel_col = "channel"
+    ticker_col = "product_ticker"
+    if df.empty:
+        return df, pd.DataFrame()
+    if not getattr(drill, "selected_channel", None) and not getattr(drill, "selected_ticker", None):
+        return df, pd.DataFrame()
+    if drill.drill_mode == "channel" and drill.selected_channel and channel_col in df.columns:
+        segment_df = df[df[channel_col].astype(str).str.strip() == str(drill.selected_channel).strip()]
+        return df, segment_df if not segment_df.empty else pd.DataFrame()
+    if drill.drill_mode == "ticker" and drill.selected_ticker and ticker_col in df.columns:
+        segment_df = df[df[ticker_col].astype(str).str.strip() == str(drill.selected_ticker).strip()]
+        return df, segment_df if not segment_df.empty else pd.DataFrame()
+    return df, pd.DataFrame()
 
 
 def _execute_data_query_service(
@@ -1063,24 +1817,83 @@ def render(state: FilterState, contract: dict[str, Any]) -> None:
 
 
 def _render_intelligence_desk_v2(state: FilterState, contract: dict[str, Any]) -> None:
-    """Chat-only Intelligence Desk."""
+    """Intelligence Desk: mode-based analytics assistant (Dataset Q&A, Claude Analyst, Market Intelligence)."""
     _ = contract
     _inject_nlq_page_css()
     st.title("Intelligence Desk")
     st.markdown(
-        "<div class='inteldesk-subtitle'>Ask one focused question and get a concise analyst response.</div>",
+        "<div class='inteldesk-subtitle'>Dataset Q&A and Claude Analyst use your selected internal data scope. Market Intelligence uses external context only.</div>",
         unsafe_allow_html=True,
     )
     provider_status = get_provider_status()
+    status_text = provider_status.status_text
+    if not provider_status.enabled:
+        status_text = "Claude unavailable. Internal data modes still answer from your dataset with deterministic fallback. Market Intelligence requires Claude."
     st.markdown(
-        f"<div class='inteldesk-status'>{provider_status.status_text}</div>",
+        f"<div class='inteldesk-status'>{status_text}</div>",
         unsafe_allow_html=True,
     )
+
+    if INTEL_DESK_MODE_KEY not in st.session_state:
+        st.session_state[INTEL_DESK_MODE_KEY] = INTEL_MODE_DATASET_QA
+    if INTEL_DATA_SCOPE_KEY not in st.session_state:
+        st.session_state[INTEL_DATA_SCOPE_KEY] = INTEL_SCOPE_CURRENT
+    if INTEL_FORMAT_STYLE_KEY not in st.session_state:
+        st.session_state[INTEL_FORMAT_STYLE_KEY] = INTEL_FORMAT_STANDARD
+
+    mode_values = [val for _, val in INTEL_MODES]
+    st.radio(
+        "Answer mode",
+        options=mode_values,
+        index=0,
+        key=INTEL_DESK_MODE_KEY,
+        horizontal=True,
+        format_func=lambda v: INTEL_MODE_LABELS.get(v, v),
+    )
+    if st.session_state[INTEL_DESK_MODE_KEY] not in mode_values:
+        st.session_state[INTEL_DESK_MODE_KEY] = INTEL_MODE_AUTO
+    scope_values = [val for _, val in INTEL_SCOPES]
+    st.selectbox(
+        "Data scope",
+        options=scope_values,
+        index=0,
+        key=INTEL_DATA_SCOPE_KEY,
+        format_func=lambda v: INTEL_SCOPE_LABELS.get(v, v),
+    )
+    if st.session_state[INTEL_DATA_SCOPE_KEY] not in scope_values:
+        st.session_state[INTEL_DATA_SCOPE_KEY] = INTEL_SCOPE_CURRENT
+    format_values = [val for _, val in INTEL_FORMATS]
+    st.selectbox(
+        "Response format",
+        options=format_values,
+        index=0,
+        key=INTEL_FORMAT_STYLE_KEY,
+        format_func=lambda v: INTEL_FORMAT_LABELS.get(v, v),
+    )
+    if st.session_state[INTEL_FORMAT_STYLE_KEY] not in format_values:
+        st.session_state[INTEL_FORMAT_STYLE_KEY] = INTEL_FORMAT_STANDARD
+    current_mode = st.session_state.get(INTEL_DESK_MODE_KEY, INTEL_MODE_AUTO)
+    current_scope = st.session_state.get(INTEL_DATA_SCOPE_KEY, INTEL_SCOPE_CURRENT)
+    current_format = st.session_state.get(INTEL_FORMAT_STYLE_KEY, INTEL_FORMAT_STANDARD)
+    if current_mode == INTEL_MODE_MARKET_INTEL:
+        st.caption("Market Intelligence does not read the internal dataset. The data scope selector applies to the two internal-data modes only.")
+    elif current_mode == INTEL_MODE_AUTO:
+        st.caption(
+            "Auto will resolve transparently. If it chooses an internal-data mode, it will use: "
+            f"{_get_scope_reminder_text(INTEL_MODE_DATASET_QA, current_scope, drill_state=get_drill_state())}"
+        )
+    else:
+        st.caption(f"Internal data source: {_get_scope_reminder_text(current_mode, current_scope, drill_state=get_drill_state())}")
+    st.caption(
+        f"Response format is presentation-only: {_get_intelligence_format_label(current_format)}. "
+        "It does not change routing or mode resolution."
+    )
+
     st.markdown("<div class='inteldesk-examples-label'>Example prompts</div>", unsafe_allow_html=True)
     st.markdown("<div class='inteldesk-examples-row' aria-hidden='true'></div>", unsafe_allow_html=True)
     examples = [
-        "Which ETF had the highest inflow this month?",
-        "Summarize ETF flow trends from the data.",
+        "Which ETF had the highest NNB in the data?",
+        "Summarize flow trends from the dataset.",
         "Which channel or country has the most AUM?",
     ]
     ecols = st.columns(3)
@@ -1098,7 +1911,7 @@ def _render_intelligence_desk_v2(state: FilterState, contract: dict[str, Any]) -
     prompt = st.text_area(
         "Message",
         key=INTEL_CHAT_INPUT_KEY,
-        placeholder="Ask a market or portfolio intelligence question...",
+        placeholder="Ask a question about your data...",
         height=100,
     )
     user_text = (prompt or "").strip()
@@ -1119,114 +1932,45 @@ def _render_intelligence_desk_v2(state: FilterState, contract: dict[str, Any]) -
         st.session_state.pop(INTEL_LAST_SUBSET_DF_KEY, None)
         st.rerun()
 
-    history: list[dict[str, str]] = st.session_state.get(INTEL_CHAT_HISTORY_KEY) or []
+    history: list[dict[str, Any]] = st.session_state.get(INTEL_CHAT_HISTORY_KEY) or []
     response_box = st.container()
 
     if run_clicked and user_text:
         history.append({"role": "user", "text": user_text})
         st.session_state[INTEL_LAST_SUBSET_DF_KEY] = pd.DataFrame()
-        subset_df: pd.DataFrame = pd.DataFrame()
-        if not provider_status.enabled or not claude_generate_grounded:
-            history.append({"role": "assistant", "text": "Provider unavailable.", "mode": "claude"})
+        current_mode = st.session_state.get(INTEL_DESK_MODE_KEY, INTEL_MODE_AUTO)
+        current_scope = st.session_state.get(INTEL_DATA_SCOPE_KEY, INTEL_SCOPE_CURRENT)
+        current_format = st.session_state.get(INTEL_FORMAT_STYLE_KEY, INTEL_FORMAT_STANDARD)
+        drill_state = get_drill_state()
+        df_load, filtered_load = _load_intelligence_desk_df_by_scope(current_scope, state, ROOT)
+        resolution = resolve_intelligence_mode(user_text, current_mode, df_load)
+        with st.spinner("Thinking..." if resolution.resolved_mode == INTEL_MODE_MARKET_INTEL else "Analysing data..."):
+            out = answer_intelligence_desk(
+                user_text,
+                resolution.resolved_mode,
+                df_load,
+                filtered_load,
+                requested_mode=resolution.requested_mode,
+                source_scope=current_scope,
+                resolution=resolution,
+            )
+        answer_text = (out.get("answer") or "").strip() or "No response returned."
+        result_mode = out.get("resolved_mode", resolution.resolved_mode)
+        subset_result = out.get("subset_df")
+        if isinstance(subset_result, pd.DataFrame) and not subset_result.empty and result_mode in INTEL_INTERNAL_MODES:
+            st.session_state[INTEL_LAST_SUBSET_DF_KEY] = subset_result
         else:
-            answer_mode = "claude"
-            # ── Classify question type FIRST to avoid unnecessary data loading ──
-            question_type = _classify_intelligence_question(user_text)
-            logger.debug("[IntelDesk] question_type=%s", question_type)
-            
-            if question_type == "general":
-                # General/conceptual question → use Claude directly, no dataset needed
-                logger.debug("[IntelDesk] general question, using Claude directly (no dataset load)")
-                with st.spinner("Thinking..."):
-                    answer = claude_generate_general_answer(user_text)
-                # Ensure no dataset table is shown for general questions
-                st.session_state[INTEL_LAST_SUBSET_DF_KEY] = pd.DataFrame()
-                
-            elif question_type in ("dataset", "hybrid"):
-                # Dataset-related question → load data and check relevance
-                _q_lower = user_text.lower()
-                _prefer_geo = any(k in _q_lower for k in ("country", "countries", "region", "geographic", "geo"))
-                gateway_dict = filter_state_to_gateway_dict(state)
-                gateway_json = json.dumps(gateway_dict, sort_keys=True, default=str)
-                df_raw = _load_intelligence_desk_df(gateway_json, str(ROOT), prefer_geo=_prefer_geo)
-                logger.debug(
-                    "[IntelDesk] dataset question, df_raw_shape=%s df_raw_cols=%s",
-                    getattr(df_raw, "shape", None),
-                    list(df_raw.columns[:12]) if not df_raw.empty else [],
-                )
-                subset_df, context_markdown = retrieve_intelligence_desk_context(user_text, df_raw)
-                logger.debug(
-                    "[IntelDesk] subset rows=%d cols=%s context_len=%d",
-                    len(subset_df),
-                    list(subset_df.columns),
-                    len(context_markdown),
-                )
-                
-                # Check if we have relevant data
-                has_relevant_data = (
-                    not subset_df.empty
-                    and bool(context_markdown)
-                    and _is_inteldesk_subset_relevant(user_text, subset_df)
-                )
-                
-                if has_relevant_data:
-                    # We have relevant dataset context → use grounded Claude
-                    system_prompt = (
-                        "You are a financial data analyst operating inside the Intelligence Desk of an ETF analytics platform.\n\n"
-                        "Your task is to answer the user's question ONLY using the dataset context provided below.\n\n"
-                        "Rules:\n"
-                        "- Do not use outside knowledge.\n"
-                        "- Do not invent values or extrapolate.\n"
-                        "- Do not guess missing fields.\n"
-                        "- If the answer is not in the dataset, say exactly: 'Data not available in the current dataset.'\n"
-                        "- If the dataset only partially answers the question, explain the limitation.\n"
-                        "- Be concise and analyst-style.\n"
-                        "- Highlight ranking or key drivers visible in the data.\n\n"
-                        "Dataset context (use ONLY this data):\n\n"
-                        f"{context_markdown}"
-                    )
-                    claude_success = False
-                    try:
-                        with st.spinner("Analysing dataset..."):
-                            answer = claude_generate_grounded(
-                                system_prompt,
-                                user_text,
-                                model=INTEL_DESK_MODEL,
-                                max_tokens=1000,
-                            )
-                            claude_success = True
-                            logger.debug("[IntelDesk] grounded call success, answer_len=%d", len(answer))
-                    except (ChatProviderError, ClaudeError) as e:
-                        answer = (str(getattr(e, "message", e)) or "Request failed.").strip()
-                        logger.debug("[IntelDesk] grounded call error: %s", answer)
-                    except Exception as _exc:
-                        answer = "Request failed."
-                        logger.debug("[IntelDesk] grounded call exception: %s", _exc)
-                    
-                    if claude_success and _is_inteldesk_answer_grounded(answer, context_markdown, subset_df):
-                        # Accepted grounded answer — store subset and set mode.
-                        answer_mode = "grounded_data"
-                        st.session_state[INTEL_LAST_SUBSET_DF_KEY] = subset_df
-                    else:
-                        # Grounded call failed or returned a refusal → fallback to general Claude.
-                        logger.debug("[IntelDesk] grounded path failed/refusal, falling back to general Claude")
-                        with st.spinner("Thinking..."):
-                            answer = claude_generate_general_answer(user_text)
-                        st.session_state[INTEL_LAST_SUBSET_DF_KEY] = pd.DataFrame()
-                else:
-                    # Dataset question but no relevant data → general Claude, no clarification prefix.
-                    logger.debug("[IntelDesk] dataset question but no relevant data, using general Claude")
-                    with st.spinner("Thinking..."):
-                        answer = claude_generate_general_answer(user_text)
-                    st.session_state[INTEL_LAST_SUBSET_DF_KEY] = pd.DataFrame()
-            else:
-                # Fallback (should not happen)
-                logger.warning("[IntelDesk] unknown question_type=%s, using general Claude", question_type)
-                with st.spinner("Thinking..."):
-                    answer = claude_generate_general_answer(user_text)
-                st.session_state[INTEL_LAST_SUBSET_DF_KEY] = pd.DataFrame()
-            
-            history.append({"role": "assistant", "text": (answer or "").strip() or "No response returned.", "mode": answer_mode})
+            st.session_state[INTEL_LAST_SUBSET_DF_KEY] = pd.DataFrame()
+        out["answer"] = answer_text
+        history.append(
+            _build_intelligence_assistant_message(
+                question=user_text,
+                out=out,
+                requested_scope=current_scope,
+                format_style=current_format,
+                drill_state=drill_state,
+            )
+        )
         st.session_state[INTEL_CHAT_HISTORY_KEY] = history
 
     history = st.session_state.get(INTEL_CHAT_HISTORY_KEY) or []
@@ -1243,13 +1987,25 @@ def _render_intelligence_desk_v2(state: FilterState, contract: dict[str, Any]) -
             last_assistant = next((m for m in reversed(history) if m.get("role") == "assistant"), None)
             if last_assistant:
                 st.markdown("<div class='inteldesk-response-anchor' aria-hidden='true'></div>", unsafe_allow_html=True)
-                # mode in history is the single source of truth for rendering decisions.
-                mode = last_assistant.get("mode", "claude")
-                mode_label = "Mode: Grounded Data" if mode == "grounded_data" else "Mode: Claude"
-                st.markdown(f"<div class='inteldesk-mode-badge'>{mode_label}</div>", unsafe_allow_html=True)
-                st.markdown(last_assistant.get("text", ""))
-                # Only show data table when this specific answer was grounded — never for Claude answers.
-                if mode == "grounded_data":
+                _render_intelligence_metadata_row(last_assistant)
+                resolution_reason = last_assistant.get("resolution_reason")
+                if resolution_reason:
+                    st.caption(f"Resolution note: {resolution_reason}")
+                source_label = last_assistant.get("source_label")
+                if source_label:
+                    st.caption(source_label)
+                _render_intelligence_clarification_card(last_assistant)
+                st.markdown(
+                    format_intelligence_response(
+                        last_assistant.get("text", ""),
+                        last_assistant.get("format_style"),
+                    )
+                )
+                mode = _normalize_intelligence_mode(
+                    last_assistant.get("resolved_mode", last_assistant.get("mode")),
+                    fallback=INTEL_MODE_CLAUDE_ANALYST,
+                )
+                if mode in INTEL_INTERNAL_MODES:
                     last_subset = st.session_state.get(INTEL_LAST_SUBSET_DF_KEY)
                     if last_subset is not None and isinstance(last_subset, pd.DataFrame) and not last_subset.empty:
                         st.markdown("### Data used for analysis")
