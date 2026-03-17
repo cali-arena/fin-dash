@@ -1833,7 +1833,7 @@ def _render_intelligence_desk_v2(state: FilterState, contract: dict[str, Any]) -
     provider_status = get_provider_status()
     status_text = provider_status.status_text
     if not provider_status.enabled:
-        status_text = "Claude unavailable. Internal data modes still answer from your dataset with deterministic fallback. Market Intelligence requires Claude."
+        status_text = "AI mode is currently unavailable. You can still use 'Use my data' to get answers from your dataset."
     st.markdown(
         f"<div class='inteldesk-status'>{status_text}</div>",
         unsafe_allow_html=True,
@@ -1848,27 +1848,6 @@ def _render_intelligence_desk_v2(state: FilterState, contract: dict[str, Any]) -
     if INTEL_FORMAT_STYLE_KEY not in st.session_state:
         st.session_state[INTEL_FORMAT_STYLE_KEY] = INTEL_FORMAT_STANDARD
 
-    st.markdown("**How should I answer?**")
-    btn_col1, btn_col2 = st.columns(2)
-    with btn_col1:
-        use_data = st.button(
-            "📊 Use my data",
-            key="inteldesk_btn_use_data",
-            type="primary" if st.session_state[INTEL_DESK_MODE_KEY] == INTEL_MODE_DATASET_QA else "secondary",
-        )
-    with btn_col2:
-        use_ai = st.button(
-            "🤖 Use AI (Claude)",
-            key="inteldesk_btn_use_ai",
-            type="primary" if st.session_state[INTEL_DESK_MODE_KEY] == INTEL_MODE_CLAUDE_ANALYST else "secondary",
-        )
-    if use_data:
-        st.session_state[INTEL_DESK_MODE_KEY] = INTEL_MODE_DATASET_QA
-        st.rerun()
-    if use_ai:
-        st.session_state[INTEL_DESK_MODE_KEY] = INTEL_MODE_CLAUDE_ANALYST
-        st.rerun()
-    st.caption("Use my data → answers strictly from your dataset. Use AI → generates a narrative explanation.")
     scope_values = [val for _, val in INTEL_SCOPES]
     st.selectbox(
         "Data scope",
@@ -1913,6 +1892,26 @@ def _render_intelligence_desk_v2(state: FilterState, contract: dict[str, Any]) -
         st.session_state[INTEL_CHAT_INPUT_KEY] = ""
 
     st.markdown("<div class='inteldesk-divider'></div>", unsafe_allow_html=True)
+    st.markdown("**How should I answer?**")
+    btn_col1, btn_col2 = st.columns(2)
+    with btn_col1:
+        use_data = st.button(
+            "📊 Use my data",
+            key="inteldesk_btn_use_data",
+            type="primary" if st.session_state[INTEL_DESK_MODE_KEY] == INTEL_MODE_DATASET_QA else "secondary",
+        )
+    with btn_col2:
+        use_ai = st.button(
+            "🤖 Use AI (Claude)",
+            key="inteldesk_btn_use_ai",
+            type="primary" if st.session_state[INTEL_DESK_MODE_KEY] == INTEL_MODE_CLAUDE_ANALYST else "secondary",
+        )
+    if use_data:
+        st.session_state[INTEL_DESK_MODE_KEY] = INTEL_MODE_DATASET_QA
+        st.rerun()
+    if use_ai:
+        st.session_state[INTEL_DESK_MODE_KEY] = INTEL_MODE_CLAUDE_ANALYST
+        st.rerun()
     prompt = st.text_area(
         "Message",
         key=INTEL_CHAT_INPUT_KEY,
