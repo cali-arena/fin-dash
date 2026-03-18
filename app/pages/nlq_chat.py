@@ -11,7 +11,7 @@ import importlib.util
 import re
 from calendar import monthrange
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Callable
 
@@ -67,6 +67,7 @@ INTEL_DESK_MODEL = "claude-haiku-4-5"
 INTEL_CHAT_HISTORY_KEY = "inteldesk_chat_history_v3"
 INTEL_CHAT_INPUT_KEY = "inteldesk_chat_input_v3"
 INTEL_LAST_SUBSET_DF_KEY = "inteldesk_last_subset_df"
+INTEL_PENDING_QUESTION_KEY = "inteldesk_pending_question"
 INTEL_DESK_MODE_KEY = "inteldesk_mode"
 INTEL_DATA_SCOPE_KEY = "inteldesk_data_scope"
 INTEL_FORMAT_STYLE_KEY = "inteldesk_format_style"
@@ -443,6 +444,47 @@ def _build_intelligence_assistant_message(
 
 def _normalize_text(s: str) -> str:
     return re.sub(r"\s+", " ", (s or "").strip().lower())
+
+
+def _autoroute_intel_mode(question: str, selected_mode: str) -> str:
+    """
+    Given the user's selected mode (from the two-button UI) and the question,
+    return the concrete backend mode to use.
+
+    Rules:
+    - If selected_mode is INTEL_MODE_DATASET_QA: always stay in dataset_qa
+      (user explicitly wants data; boundary message will handle non-dataset questions).
+    - If selected_mode is INTEL_MODE_AI_GENERAL: auto-promote to dataset_qa
+      when the question has clear dataset intent (helps RAG enforcement for hybrid questions).
+      Otherwise stay as ai_general.
+    - Never silently switch dataset_qa -> ai_general.
+    """
+    if selected_mode != INTEL_MODE_AI_GENERAL:
+        return selected_mode
+    q_class = _classify_intelligence_question(question)
+    if q_class == "dataset":
+        return INTEL_MODE_DATASET_QA
+    return INTEL_MODE_AI_GENERAL
+
+
+def _log_intel_event(
+    question: str,
+    selected_mode: str,
+    *,
+    resolved_mode: str | None = None,
+    grounded: bool = False,
+    error: str | None = None,
+) -> None:
+    """Audit log for every Intelligence Desk question/answer cycle."""
+    logger.info(
+        "[IntelDesk] q=%r selected=%s resolved=%s grounded=%s error=%s ts=%s",
+        question[:160],
+        selected_mode,
+        resolved_mode or selected_mode,
+        grounded,
+        error or "none",
+        datetime.now().isoformat(timespec="seconds"),
+    )
 
 
 def _classify_query_route(text: str) -> QueryRoute:
@@ -1906,7 +1948,8 @@ def _render_intelligence_desk_v2(state: FilterState, contract: dict[str, Any]) -
     for idx, ex in enumerate(examples):
         with ecols[idx]:
             if st.button(ex, key=f"inteldesk_ex_{idx}", width="stretch"):
-                st.session_state[INTEL_CHAT_INPUT_KEY] = ex
+                st.session_state[INTEL_PENDING_QUESTION_KEY] = ex
+                st.rerun()
 
     st.markdown("<div class='inteldesk-divider'></div>", unsafe_allow_html=True)
     st.markdown("<div class='inteldesk-mode-selector-label'>How should I answer?</div>", unsafe_allow_html=True)
@@ -1960,51 +2003,41 @@ def _render_intelligence_desk_v2(state: FilterState, contract: dict[str, Any]) -
 
     if INTEL_CHAT_HISTORY_KEY not in st.session_state:
         st.session_state[INTEL_CHAT_HISTORY_KEY] = []
-    if INTEL_CHAT_INPUT_KEY not in st.session_state:
-        st.session_state[INTEL_CHAT_INPUT_KEY] = ""
 
-    prompt = st.text_area(
-        "Message",
-        key=INTEL_CHAT_INPUT_KEY,
-        placeholder="Ask a question...",
-        height=100,
-    )
-    user_text = (prompt or "").strip()
-    c1, c2, _ = st.columns([1, 1, 4])
-    with c1:
-        run_clicked = st.button(
-            "Generate",
-            key="inteldesk_send_btn",
-            type="primary",
-            disabled=not user_text,
-        )
-    with c2:
-        clear_clicked = st.button("Clear chat", key="inteldesk_clear_btn")
+    # Chat input auto-runs on Enter — no Generate button needed
+    chat_input = st.chat_input("Ask a question...")
+    # Also pick up example-prompt injections (set via button, consumed once)
+    pending = st.session_state.pop(INTEL_PENDING_QUESTION_KEY, None)
+    user_text = (chat_input or pending or "").strip()
 
-    if clear_clicked:
-        st.session_state[INTEL_CHAT_HISTORY_KEY] = []
-        st.session_state[INTEL_CHAT_INPUT_KEY] = ""
-        st.session_state.pop(INTEL_LAST_SUBSET_DF_KEY, None)
-        st.rerun()
+    clear_col, _ = st.columns([1, 5])
+    with clear_col:
+        if st.button("Clear chat", key="inteldesk_clear_btn"):
+            st.session_state[INTEL_CHAT_HISTORY_KEY] = []
+            st.session_state.pop(INTEL_LAST_SUBSET_DF_KEY, None)
+            st.rerun()
 
     history: list[dict[str, Any]] = st.session_state.get(INTEL_CHAT_HISTORY_KEY) or []
     response_box = st.container()
 
-    if run_clicked and user_text:
+    if user_text:
         history.append({"role": "user", "text": user_text})
         st.session_state[INTEL_LAST_SUBSET_DF_KEY] = pd.DataFrame()
         selected_mode = st.session_state.get(INTEL_DESK_MODE_KEY, INTEL_MODE_DATASET_QA)
         if selected_mode not in INTEL_UI_TWO_MODES:
             selected_mode = INTEL_MODE_DATASET_QA
+        # Auto-route: if AI mode selected but question is clearly about the dataset, use dataset_qa
+        effective_mode = _autoroute_intel_mode(user_text, selected_mode)
         current_scope = st.session_state.get(INTEL_DATA_SCOPE_KEY, INTEL_SCOPE_CURRENT)
         current_format = st.session_state.get(INTEL_FORMAT_STYLE_KEY, INTEL_FORMAT_STANDARD)
         drill_state = get_drill_state()
+        _log_intel_event(user_text, selected_mode, resolved_mode=effective_mode)
         df_load, filtered_load = _load_intelligence_desk_df_by_scope(current_scope, state, ROOT)
-        spinner_text = "Thinking..." if selected_mode == INTEL_MODE_AI_GENERAL else "Analysing data..."
+        spinner_text = "Thinking..." if effective_mode == INTEL_MODE_AI_GENERAL else "Analysing data..."
         with st.spinner(spinner_text):
             out = answer_intelligence_desk(
                 user_text,
-                selected_mode,
+                effective_mode,
                 df_load,
                 filtered_load,
                 requested_mode=selected_mode,
@@ -2012,7 +2045,7 @@ def _render_intelligence_desk_v2(state: FilterState, contract: dict[str, Any]) -
                 resolution=None,
             )
         answer_text = (out.get("answer") or "").strip() or "No response returned."
-        result_mode = out.get("resolved_mode", selected_mode)
+        result_mode = out.get("resolved_mode", effective_mode)
         subset_result = out.get("subset_df")
         is_grounded_result = (
             isinstance(subset_result, pd.DataFrame) and not subset_result.empty
@@ -2023,6 +2056,13 @@ def _render_intelligence_desk_v2(state: FilterState, contract: dict[str, Any]) -
         else:
             st.session_state[INTEL_LAST_SUBSET_DF_KEY] = pd.DataFrame()
         out["answer"] = answer_text
+        _log_intel_event(
+            user_text,
+            selected_mode,
+            resolved_mode=result_mode,
+            grounded=bool(out.get("grounded")),
+            error=out.get("error"),
+        )
         history.append(
             _build_intelligence_assistant_message(
                 question=user_text,
@@ -2037,9 +2077,7 @@ def _render_intelligence_desk_v2(state: FilterState, contract: dict[str, Any]) -
     history = st.session_state.get(INTEL_CHAT_HISTORY_KEY) or []
     with response_box:
         st.markdown("<div class='inteldesk-divider'></div>", unsafe_allow_html=True)
-        if run_clicked and not user_text:
-            st.warning("Enter a message before generating.")
-        elif not history:
+        if not history:
             st.markdown(
                 "<div class='inteldesk-response-placeholder'>Ask a question above or click an example to start.</div>",
                 unsafe_allow_html=True,
