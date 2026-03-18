@@ -1062,15 +1062,25 @@ def _build_inteldesk_deterministic_answer(question: str, subset_df: pd.DataFrame
 
     # Direct answer
     if top_label and top_value:
-        lines.append(f"**Answer:** The {direction} {metric_label} in the current scope is **{top_label}** at **{top_value}**.")
+        lines.append(f"**Answer:** The {direction} {metric_label} in the current filtered dataset is **{top_label}** at **{top_value}**.")
     elif leaders:
         lines.append(f"**Answer:** The leading {metric_label} values are {leaders}.")
     else:
         return f"I found {len(subset_df):,} matching rows in the current scope, but there is not enough ranked metric data to answer that precisely."
 
+    # Key insight (when we have a clear leader and peers)
+    if top_label and leaders:
+        lines.append(
+            f"\n**Key insight:** The gap versus the next names suggests the strongest result is concentrated rather than evenly distributed."
+        )
+    elif top_label and top_value:
+        lines.append(
+            f"\n**Key insight:** This reflects the top observation in the retrieved subset for the selected scope."
+        )
+
     # Supporting context
     if leaders and top_label:
-        lines.append(f"\n**Supporting context:** Other notable entries: {leaders}. The retrieved subset contains {len(subset_df):,} rows.")
+        lines.append(f"\n**Supporting context:** Other notable entries in the visible sample: {leaders}. The retrieved subset contains {len(subset_df):,} rows.")
     else:
         lines.append(f"\n**Supporting context:** The retrieved subset contains {len(subset_df):,} rows.")
 
@@ -1373,15 +1383,16 @@ def answer_intelligence_desk(
         "- If the data does not support a claim, say so explicitly.\n"
         "- Never repeat the phrase 'based on the dataset' or 'based on the data' more than once.\n\n"
         "ANSWER STRUCTURE — follow this template as closely as possible:\n\n"
-        "**Answer:** State the direct answer to the question with the key figure(s).\n\n"
-        "**Key insight:** One sentence explaining why this result matters — concentration, "
-        "dominance, gap vs peers, trend direction, or anomaly.\n\n"
-        "**Supporting context:** 1-3 sentences with additional observations visible in the data "
-        "(rankings, distribution, secondary comparisons). Reference specific names and numbers.\n\n"
-        "**Caveat:** One sentence on scope limitations — filtered view, subset size, time range, "
-        "or missing dimensions that the reader should keep in mind.\n\n"
-        "**Suggested next analysis:** One concrete follow-up question the reader could ask to deepen "
-        "the analysis (e.g. break down by month, compare channels, overlay another metric).\n\n"
+        "**Answer:** State the direct answer with key figure(s). Use rounded, readable numbers (e.g. about 363.4M, 12.5K). "
+        "Say 'in the current filtered dataset' when referring to scope.\n\n"
+        "**Key insight:** One sentence on why this result matters — e.g. gap versus the next names, concentration vs even distribution, "
+        "dominance, trend direction, or anomaly. Be specific to the numbers shown.\n\n"
+        "**Supporting context:** 1-3 sentences with other visible observations (rankings, other high/low names, distribution). "
+        "Reference specific tickers/channels and numbers from the data.\n\n"
+        "**Caveat:** One sentence that this reflects the current filtered view and retrieved subset, and should not be treated as "
+        "a statement about the full universe unless scope is expanded.\n\n"
+        "**Suggested next analysis:** One concrete next step — e.g. compare by month, channel, or country to see if the lead "
+        "is persistent or driven by a single period; or overlay another metric.\n\n"
         "STYLE:\n"
         "- Be concise but not shallow. Sound like a thoughtful analyst, not a query renderer.\n"
         "- Use formatted numbers (e.g. 363.4M, 12.5K, 0.45%).\n"
