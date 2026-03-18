@@ -119,13 +119,20 @@ INTEL_FORMAT_LABELS = {value: label for label, value in INTEL_FORMATS}
 
 # Keywords that indicate the question is about the dataset; general questions lack these.
 DATASET_KEYWORDS = [
-    "nnb", "aum", "flow", "flows", "ticker", "etf",
-    "inflow", "outflow", "asset", "month", "channel", "country",
+    "nnb", "aum", "flow", "flows", "ticker", "tickers", "etf",
+    "inflow", "inflows", "outflow", "outflows", "asset", "fund", "funds",
+    "month", "channel", "country", "region", "exposure",
     "segment", "sub-segment", "sub segment", "sub_segment",
     "sales focus", "sales_focus", "product", "portfolio",
-    "ranking", "top", "highest", "lowest", "compare", "trend",
-    "growth", "performance", "return", "risk", "contributor",
+    "ranking", "top", "bottom", "highest", "lowest", "compare", "distribution",
+    "trend", "growth", "performance", "return", "risk", "contributor",
     "net new", "organic growth", "market impact", "fee yield",
+]
+# Imperative analytics verbs that signal dataset intent regardless of whether
+# the question also has an explanatory prefix ("explain X and show Y").
+DATASET_ANALYTICS_VERBS = [
+    "show", "list", "rank", "compare", "find", "identify",
+    "calculate", "summarize", "break down", "breakdown",
 ]
 
 # General/conceptual question indicators
@@ -446,25 +453,32 @@ def _normalize_text(s: str) -> str:
     return re.sub(r"\s+", " ", (s or "").strip().lower())
 
 
-def _autoroute_intel_mode(question: str, selected_mode: str) -> str:
+def _autoroute_intel_mode(question: str, selected_mode: str) -> tuple[str, str, list[str]]:
     """
     Given the user's selected mode (from the two-button UI) and the question,
-    return the concrete backend mode to use.
+    return (effective_mode, classifier_label, dataset_terms_found).
 
     Rules:
-    - If selected_mode is INTEL_MODE_DATASET_QA: always stay in dataset_qa
-      (user explicitly wants data; boundary message will handle non-dataset questions).
-    - If selected_mode is INTEL_MODE_AI_GENERAL: auto-promote to dataset_qa
-      when the question has clear dataset intent (helps RAG enforcement for hybrid questions).
-      Otherwise stay as ai_general.
-    - Never silently switch dataset_qa -> ai_general.
+    - INTEL_MODE_DATASET_QA: always stays dataset_qa (user explicitly wants data).
+    - INTEL_MODE_AI_GENERAL: upgraded to dataset_qa whenever the question contains
+      ANY dataset intent (classifier returns "dataset" or "hybrid").
+      Only stays ai_general for purely "general" questions.
+    - Never demotes dataset_qa to ai_general.
     """
-    if selected_mode != INTEL_MODE_AI_GENERAL:
-        return selected_mode
+    q = _normalize_text(question)
+    dataset_terms_found = [k for k in DATASET_KEYWORDS if k in q] + [
+        v for v in DATASET_ANALYTICS_VERBS if v in q
+    ]
     q_class = _classify_intelligence_question(question)
-    if q_class == "dataset":
-        return INTEL_MODE_DATASET_QA
-    return INTEL_MODE_AI_GENERAL
+
+    if selected_mode != INTEL_MODE_AI_GENERAL:
+        return selected_mode, q_class, dataset_terms_found
+
+    # Any dataset signal → upgrade to grounded path
+    if q_class in ("dataset", "hybrid"):
+        return INTEL_MODE_DATASET_QA, q_class, dataset_terms_found
+
+    return INTEL_MODE_AI_GENERAL, q_class, dataset_terms_found
 
 
 def _log_intel_event(
@@ -472,15 +486,22 @@ def _log_intel_event(
     selected_mode: str,
     *,
     resolved_mode: str | None = None,
+    classifier_label: str | None = None,
+    dataset_terms_found: list[str] | None = None,
+    used_retrieval: bool = False,
     grounded: bool = False,
     error: str | None = None,
 ) -> None:
     """Audit log for every Intelligence Desk question/answer cycle."""
     logger.info(
-        "[IntelDesk] q=%r selected=%s resolved=%s grounded=%s error=%s ts=%s",
+        "[IntelDesk] q=%r selected_mode=%s resolved_mode=%s classifier_label=%s "
+        "dataset_terms_found=%s used_retrieval=%s grounded=%s error=%s ts=%s",
         question[:160],
         selected_mode,
         resolved_mode or selected_mode,
+        classifier_label or "n/a",
+        dataset_terms_found or [],
+        used_retrieval,
         grounded,
         error or "none",
         datetime.now().isoformat(timespec="seconds"),
@@ -806,62 +827,50 @@ _CLAUDE_REFUSAL_FRAGMENTS = (
 def _classify_intelligence_question(question: str) -> str:
     """
     Classify Intelligence Desk questions into:
-    - "general": definitional/conceptual questions
-    - "dataset": questions about specific dataset metrics/entities
-    - "hybrid": references both concept + data
-    
+    - "general": purely conceptual/definitional, no dataset signal
+    - "dataset": contains dataset terms and/or analytical verbs — must use grounded retrieval
+    - "hybrid": contains both explanatory AND dataset signals
+      (treated as dataset-priority: caller must route to grounded path)
+
     Returns one of: "general", "dataset", "hybrid"
+
+    Rule: ANY question that contains at least one DATASET_KEYWORD or DATASET_ANALYTICS_VERB
+    will NOT return "general", regardless of whether it also contains explanation words.
+    This prevents "Explain AUM and show top tickers" from leaking into ai_general.
     """
     q = _normalize_text(question)
-    
-    # Check for general/conceptual question patterns
-    is_general = any(indicator in q for indicator in GENERAL_QUESTION_INDICATORS)
-    
-    # Check for dataset-specific references
+
+    asks_from_data = any(phrase in q for phrase in (
+        "from the data", "in the dataset", "based on the data", "in the data",
+        "our data", "our dataset",
+    ))
     has_dataset_ref = any(keyword in q for keyword in DATASET_KEYWORDS)
-    
-    # Special case: questions that ask "from the data" or similar
-    asks_from_data = any(phrase in q for phrase in ["from the data", "in the dataset", "based on the data"])
-    
-    # Dataset-specific metrics (definitions should be hybrid)
-    dataset_metrics = ["nnb", "nnf", "aum", "net new", "organic growth", "fee yield"]
-    # General finance terms that happen to be in dataset (definitions should be general)
-    general_finance_terms = ["risk", "market impact", "growth", "performance", "return"]
-    
-    # Check if question contains dataset metrics
-    has_dataset_metric = any(metric in q for metric in dataset_metrics)
-    # Check if question contains only general finance terms (no dataset metrics)
-    has_only_general_terms = (
-        has_dataset_ref and 
-        not has_dataset_metric and
-        all(keyword in general_finance_terms for keyword in DATASET_KEYWORDS if keyword in q)
-    )
-    
-    # Decision logic
-    if not has_dataset_ref and not asks_from_data:
-        # No dataset references at all → general
+    has_analytics_verb = any(verb in q for verb in DATASET_ANALYTICS_VERBS)
+    has_any_dataset_signal = has_dataset_ref or has_analytics_verb or asks_from_data
+
+    # Pure general: no dataset signals at all
+    if not has_any_dataset_signal:
         return "general"
-    elif asks_from_data:
-        # Explicitly asks from data → dataset
+
+    is_explanatory = any(indicator in q for indicator in GENERAL_QUESTION_INDICATORS)
+
+    # Explicit data request always wins
+    if asks_from_data:
         return "dataset"
-    elif has_dataset_ref and not is_general and not has_only_general_terms:
-        # Dataset references but not definitional → dataset
-        # (but not if only general finance terms without dataset metrics)
+
+    # Analytics verb present → always dataset (even if question also has explain/define)
+    if has_analytics_verb:
+        return "dataset" if not is_explanatory else "hybrid"
+
+    # Dataset keyword present without analytics verb
+    if has_dataset_ref and not is_explanatory:
         return "dataset"
-    elif has_dataset_metric and is_general:
-        # Dataset metrics + definitional question → hybrid
-        # Example: "Explain what NNB means" (definition of dataset metric)
+
+    # Dataset keyword + explanatory phrasing = hybrid (e.g. "explain AUM and show top tickers")
+    if has_dataset_ref and is_explanatory:
         return "hybrid"
-    elif has_dataset_ref and is_general and not has_dataset_metric:
-        # General finance terms + definitional question → general
-        # Example: "Explain the concept of market impact" (general concept)
-        return "general"
-    elif has_only_general_terms:
-        # Only general finance terms without definition → general
-        return "general"
-    else:
-        # Default fallback
-        return "general"
+
+    return "general"
 
 
 def _is_inteldesk_subset_relevant(question: str, subset_df: pd.DataFrame) -> bool:
@@ -2026,12 +2035,19 @@ def _render_intelligence_desk_v2(state: FilterState, contract: dict[str, Any]) -
         selected_mode = st.session_state.get(INTEL_DESK_MODE_KEY, INTEL_MODE_DATASET_QA)
         if selected_mode not in INTEL_UI_TWO_MODES:
             selected_mode = INTEL_MODE_DATASET_QA
-        # Auto-route: if AI mode selected but question is clearly about the dataset, use dataset_qa
-        effective_mode = _autoroute_intel_mode(user_text, selected_mode)
+        # Auto-route: upgrade ai_general → dataset_qa whenever question has dataset intent
+        effective_mode, classifier_label, dataset_terms_found = _autoroute_intel_mode(user_text, selected_mode)
         current_scope = st.session_state.get(INTEL_DATA_SCOPE_KEY, INTEL_SCOPE_CURRENT)
         current_format = st.session_state.get(INTEL_FORMAT_STYLE_KEY, INTEL_FORMAT_STANDARD)
         drill_state = get_drill_state()
-        _log_intel_event(user_text, selected_mode, resolved_mode=effective_mode)
+        used_retrieval = effective_mode in INTEL_INTERNAL_MODES
+        _log_intel_event(
+            user_text, selected_mode,
+            resolved_mode=effective_mode,
+            classifier_label=classifier_label,
+            dataset_terms_found=dataset_terms_found,
+            used_retrieval=used_retrieval,
+        )
         df_load, filtered_load = _load_intelligence_desk_df_by_scope(current_scope, state, ROOT)
         spinner_text = "Thinking..." if effective_mode == INTEL_MODE_AI_GENERAL else "Analysing data..."
         with st.spinner(spinner_text):
@@ -2057,9 +2073,11 @@ def _render_intelligence_desk_v2(state: FilterState, contract: dict[str, Any]) -
             st.session_state[INTEL_LAST_SUBSET_DF_KEY] = pd.DataFrame()
         out["answer"] = answer_text
         _log_intel_event(
-            user_text,
-            selected_mode,
+            user_text, selected_mode,
             resolved_mode=result_mode,
+            classifier_label=classifier_label,
+            dataset_terms_found=dataset_terms_found,
+            used_retrieval=used_retrieval,
             grounded=bool(out.get("grounded")),
             error=out.get("error"),
         )
