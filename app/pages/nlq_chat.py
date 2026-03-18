@@ -1035,6 +1035,7 @@ def _build_inteldesk_top_entities(
 
 
 def _build_inteldesk_deterministic_answer(question: str, subset_df: pd.DataFrame, mode: str) -> str:
+    """Structured deterministic fallback when Claude is unavailable."""
     if subset_df is None or not isinstance(subset_df, pd.DataFrame) or subset_df.empty:
         return "Data not available in the selected dataset scope for this question."
 
@@ -1055,26 +1056,37 @@ def _build_inteldesk_deterministic_answer(question: str, subset_df: pd.DataFrame
     metric_label = (metric_col or "metric").replace("_", " ")
     top_value = _format_inteldesk_value(top_row["_metric_rank_"]) if top_row is not None and "_metric_rank_" in work.columns else ""
     leaders = _build_inteldesk_top_entities(subset_df, metric_col=metric_col, entity_cols=entity_cols, ascending=ascending)
+    direction = "lowest" if ascending else "highest"
 
-    if mode == INTEL_MODE_CLAUDE_ANALYST:
-        lines = [
-            "Internal dataset readout:",
-            f"- Matching rows in scope: {len(subset_df):,}.",
-        ]
-        if top_label and top_value:
-            direction = "lowest" if ascending else "highest"
-            lines.append(f"- Headline: {direction} {metric_label} is {top_label} ({top_value}).")
-        if leaders:
-            lines.append(f"- Leading {metric_label} values: {leaders}.")
-        lines.append("- Interpretation is constrained to the selected internal dataset scope.")
-        return "\n".join(lines)
+    lines: list[str] = []
 
-    if top_label and top_value and any(k in q for k in ("which", "highest", "top", "most", "largest", "lowest", "least", "smallest", "worst")):
-        direction = "lowest" if ascending else "highest"
-        return f"Based on the selected dataset scope, the {direction} {metric_label} is {top_label} ({top_value})."
-    if leaders:
-        return f"Based on the selected dataset scope, the leading {metric_label} values are {leaders}."
-    return f"I found {len(subset_df):,} matching rows in the selected dataset scope, but there is not enough ranked metric data to answer that precisely."
+    # Direct answer
+    if top_label and top_value:
+        lines.append(f"**Answer:** The {direction} {metric_label} in the current scope is **{top_label}** at **{top_value}**.")
+    elif leaders:
+        lines.append(f"**Answer:** The leading {metric_label} values are {leaders}.")
+    else:
+        return f"I found {len(subset_df):,} matching rows in the current scope, but there is not enough ranked metric data to answer that precisely."
+
+    # Supporting context
+    if leaders and top_label:
+        lines.append(f"\n**Supporting context:** Other notable entries: {leaders}. The retrieved subset contains {len(subset_df):,} rows.")
+    else:
+        lines.append(f"\n**Supporting context:** The retrieved subset contains {len(subset_df):,} rows.")
+
+    # Caveat
+    lines.append(
+        "\n**Caveat:** This result reflects the current filtered view and retrieved subset. "
+        "Expand the data scope to confirm whether this holds across the full dataset."
+    )
+
+    # Next analysis
+    lines.append(
+        f"\n**Suggested next analysis:** Break down {metric_label} by month, channel, or country "
+        "to see whether this leader is persistent or driven by a single period."
+    )
+
+    return "\n".join(lines)
 
 
 def _internal_mode_boundary_message(question: str) -> str | None:
@@ -1354,29 +1366,32 @@ def answer_intelligence_desk(
         result["answer"] = _build_inteldesk_deterministic_answer(question, subset_df, resolved_mode)
         return result
 
-    if resolved_mode == INTEL_MODE_CLAUDE_ANALYST:
-        system_prompt = (
-            "You are a financial analyst reviewing a client's internal dataset.\n\n"
-            "Rules:\n"
-            "- Use only the dataset context below.\n"
-            "- Do not use outside knowledge.\n"
-            "- Do not invent values.\n"
-            "- If the dataset does not support a claim, say so explicitly.\n"
-            "- Provide a short narrative grounded in the data, including observations and caveats.\n\n"
-            f"Dataset context:\n\n{context_markdown}"
-        )
-    else:
-        system_prompt = (
-            "You are a financial data analyst. Answer the user's question ONLY using the dataset context below.\n\n"
-            "Rules:\n"
-            "- Do not use outside knowledge.\n"
-            "- Do not invent values.\n"
-            "- If the answer is not in the dataset, say 'Data not available in the selected dataset scope.'\n"
-            "- Keep the answer direct and data-specific.\n\n"
-            f"Dataset context:\n\n{context_markdown}"
-        )
+    system_prompt = (
+        "You are a senior institutional investment analyst reviewing a client's internal portfolio dataset.\n\n"
+        "RULES (strict):\n"
+        "- Use ONLY the dataset context provided below. Never use outside knowledge or invent values.\n"
+        "- If the data does not support a claim, say so explicitly.\n"
+        "- Never repeat the phrase 'based on the dataset' or 'based on the data' more than once.\n\n"
+        "ANSWER STRUCTURE — follow this template as closely as possible:\n\n"
+        "**Answer:** State the direct answer to the question with the key figure(s).\n\n"
+        "**Key insight:** One sentence explaining why this result matters — concentration, "
+        "dominance, gap vs peers, trend direction, or anomaly.\n\n"
+        "**Supporting context:** 1-3 sentences with additional observations visible in the data "
+        "(rankings, distribution, secondary comparisons). Reference specific names and numbers.\n\n"
+        "**Caveat:** One sentence on scope limitations — filtered view, subset size, time range, "
+        "or missing dimensions that the reader should keep in mind.\n\n"
+        "**Suggested next analysis:** One concrete follow-up question the reader could ask to deepen "
+        "the analysis (e.g. break down by month, compare channels, overlay another metric).\n\n"
+        "STYLE:\n"
+        "- Be concise but not shallow. Sound like a thoughtful analyst, not a query renderer.\n"
+        "- Use formatted numbers (e.g. 363.4M, 12.5K, 0.45%).\n"
+        "- Highlight ranking, concentration, trend, comparison, or anomaly when visible.\n"
+        "- If the dataset does not contain enough information, be honest: "
+        "'Insufficient data in the current scope to answer precisely.'\n\n"
+        f"DATASET CONTEXT ({len(subset_df):,} rows retrieved):\n\n{context_markdown}"
+    )
     try:
-        answer = claude_generate_grounded(system_prompt, question, model=INTEL_DESK_MODEL, max_tokens=1000)
+        answer = claude_generate_grounded(system_prompt, question, model=INTEL_DESK_MODEL, max_tokens=1500)
         if _is_inteldesk_answer_grounded(answer, context_markdown, subset_df):
             result["answer"] = answer
         else:
