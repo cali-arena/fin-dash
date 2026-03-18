@@ -357,9 +357,17 @@ def _build_intelligence_metadata_payload(message: dict[str, Any]) -> dict[str, s
 
 def _render_intelligence_metadata_row(message: dict[str, Any]) -> None:
     metadata = _build_intelligence_metadata_payload(message)
-    mode_label = metadata.get("mode_label_ui") or INTEL_UI_MODE_LABELS.get(
-        metadata.get("resolved_mode"), _get_intelligence_mode_label(metadata["resolved_mode"])
-    )
+    resolved = metadata.get("resolved_mode", "")
+    if resolved == INTEL_MODE_DATASET_QA:
+        mode_label = "Grounded Data"
+    elif resolved == INTEL_MODE_CLAUDE_ANALYST:
+        mode_label = "Analyst Narrative"
+    elif resolved == INTEL_MODE_AI_GENERAL:
+        mode_label = "Use AI (Claude)"
+    else:
+        mode_label = metadata.get("mode_label_ui") or INTEL_UI_MODE_LABELS.get(
+            resolved, _get_intelligence_mode_label(resolved)
+        )
     st.markdown(
         f"**Mode:** {mode_label} · **Scope:** {metadata['scope_used']} · **Grounded:** {metadata['grounded']}"
     )
@@ -1920,70 +1928,32 @@ def render(state: FilterState, contract: dict[str, Any]) -> None:
 
 
 def _render_intelligence_desk_v2(state: FilterState, contract: dict[str, Any]) -> None:
-    """Intelligence Desk: two-mode analytics assistant (Use my data / Use AI)."""
+    """Intelligence Desk: grounded dataset-first analyst assistant.
+    All questions use dataset_qa — no mode selector, no plain Claude path.
+    """
     _ = contract
     _inject_nlq_page_css()
     st.title("Intelligence Desk")
     st.markdown(
-        "<div class='inteldesk-subtitle'>Ask one focused question and get a concise analyst response.</div>",
+        "<div class='inteldesk-subtitle'>Ask a question about your internal dataset and get a grounded analyst response.</div>",
         unsafe_allow_html=True,
     )
     provider_status = get_provider_status()
     status_text = provider_status.status_text
     if not provider_status.enabled:
-        status_text = "AI mode is currently unavailable. You can still use 'Use my data' to get answers from your dataset."
+        status_text = "Claude unavailable — answers will use deterministic dataset fallback."
     st.markdown(
         f"<div class='inteldesk-status'>{status_text}</div>",
         unsafe_allow_html=True,
     )
 
-    if INTEL_DESK_MODE_KEY not in st.session_state:
-        st.session_state[INTEL_DESK_MODE_KEY] = INTEL_MODE_DATASET_QA
-    if st.session_state[INTEL_DESK_MODE_KEY] not in INTEL_UI_TWO_MODES:
-        st.session_state[INTEL_DESK_MODE_KEY] = INTEL_MODE_DATASET_QA
+    # Hardcoded: this page always uses grounded dataset mode
+    effective_mode = INTEL_MODE_DATASET_QA
+
     if INTEL_DATA_SCOPE_KEY not in st.session_state:
         st.session_state[INTEL_DATA_SCOPE_KEY] = INTEL_SCOPE_CURRENT
     if INTEL_FORMAT_STYLE_KEY not in st.session_state:
         st.session_state[INTEL_FORMAT_STYLE_KEY] = INTEL_FORMAT_STANDARD
-
-    st.markdown("<div class='inteldesk-examples-label'>Example prompts</div>", unsafe_allow_html=True)
-    st.markdown("<div class='inteldesk-examples-row' aria-hidden='true'></div>", unsafe_allow_html=True)
-    examples = [
-        "Which ETF had the highest NNB in the data?",
-        "Summarize flow trends from the dataset.",
-        "Which channel or country has the most AUM?",
-    ]
-    ecols = st.columns(3)
-    for idx, ex in enumerate(examples):
-        with ecols[idx]:
-            if st.button(ex, key=f"inteldesk_ex_{idx}", width="stretch"):
-                st.session_state[INTEL_PENDING_QUESTION_KEY] = ex
-                st.rerun()
-
-    st.markdown("<div class='inteldesk-divider'></div>", unsafe_allow_html=True)
-    st.markdown("<div class='inteldesk-mode-selector-label'>How should I answer?</div>", unsafe_allow_html=True)
-    st.markdown("<div class='inteldesk-mode-selector-row'></div>", unsafe_allow_html=True)
-    btn_col1, btn_col2 = st.columns(2)
-    with btn_col1:
-        use_data = st.button(
-            "📊 Use my data",
-            key="inteldesk_btn_use_data",
-            type="primary" if st.session_state[INTEL_DESK_MODE_KEY] == INTEL_MODE_DATASET_QA else "secondary",
-            use_container_width=True,
-        )
-    with btn_col2:
-        use_ai = st.button(
-            "🤖 Use AI (Claude)",
-            key="inteldesk_btn_use_ai",
-            type="primary" if st.session_state[INTEL_DESK_MODE_KEY] == INTEL_MODE_AI_GENERAL else "secondary",
-            use_container_width=True,
-        )
-    if use_data:
-        st.session_state[INTEL_DESK_MODE_KEY] = INTEL_MODE_DATASET_QA
-        st.rerun()
-    if use_ai:
-        st.session_state[INTEL_DESK_MODE_KEY] = INTEL_MODE_AI_GENERAL
-        st.rerun()
 
     scope_values = [val for _, val in INTEL_SCOPES]
     st.selectbox(
@@ -2006,16 +1976,30 @@ def _render_intelligence_desk_v2(state: FilterState, contract: dict[str, Any]) -
     if st.session_state[INTEL_FORMAT_STYLE_KEY] not in format_values:
         st.session_state[INTEL_FORMAT_STYLE_KEY] = INTEL_FORMAT_STANDARD
 
-    current_mode = st.session_state.get(INTEL_DESK_MODE_KEY, INTEL_MODE_DATASET_QA)
     current_scope = st.session_state.get(INTEL_DATA_SCOPE_KEY, INTEL_SCOPE_CURRENT)
     current_format = st.session_state.get(INTEL_FORMAT_STYLE_KEY, INTEL_FORMAT_STANDARD)
+
+    st.markdown("<div class='inteldesk-examples-label'>Example prompts</div>", unsafe_allow_html=True)
+    st.markdown("<div class='inteldesk-examples-row' aria-hidden='true'></div>", unsafe_allow_html=True)
+    examples = [
+        "Which ETF had the highest NNB in the data?",
+        "Summarize flow trends from the dataset.",
+        "Which channel or country has the most AUM?",
+    ]
+    ecols = st.columns(3)
+    for idx, ex in enumerate(examples):
+        with ecols[idx]:
+            if st.button(ex, key=f"inteldesk_ex_{idx}", width="stretch"):
+                st.session_state[INTEL_PENDING_QUESTION_KEY] = ex
+                st.rerun()
 
     if INTEL_CHAT_HISTORY_KEY not in st.session_state:
         st.session_state[INTEL_CHAT_HISTORY_KEY] = []
 
-    # Chat input auto-runs on Enter — no Generate button needed
-    chat_input = st.chat_input("Ask a question...")
-    # Also pick up example-prompt injections (set via button, consumed once)
+    st.markdown("<div class='inteldesk-divider'></div>", unsafe_allow_html=True)
+    # Chat input auto-runs on Enter
+    chat_input = st.chat_input("Ask a question about your data...")
+    # Consume example-prompt injections (set via button click, consumed once per render)
     pending = st.session_state.pop(INTEL_PENDING_QUESTION_KEY, None)
     user_text = (chat_input or pending or "").strip()
 
@@ -2032,52 +2016,47 @@ def _render_intelligence_desk_v2(state: FilterState, contract: dict[str, Any]) -
     if user_text:
         history.append({"role": "user", "text": user_text})
         st.session_state[INTEL_LAST_SUBSET_DF_KEY] = pd.DataFrame()
-        selected_mode = st.session_state.get(INTEL_DESK_MODE_KEY, INTEL_MODE_DATASET_QA)
-        if selected_mode not in INTEL_UI_TWO_MODES:
-            selected_mode = INTEL_MODE_DATASET_QA
-        # Auto-route: upgrade ai_general → dataset_qa whenever question has dataset intent
-        effective_mode, classifier_label, dataset_terms_found = _autoroute_intel_mode(user_text, selected_mode)
-        current_scope = st.session_state.get(INTEL_DATA_SCOPE_KEY, INTEL_SCOPE_CURRENT)
-        current_format = st.session_state.get(INTEL_FORMAT_STYLE_KEY, INTEL_FORMAT_STANDARD)
         drill_state = get_drill_state()
-        used_retrieval = effective_mode in INTEL_INTERNAL_MODES
+        # Log intake — mode is always dataset_qa, retrieval always runs
         _log_intel_event(
-            user_text, selected_mode,
+            user_text, effective_mode,
             resolved_mode=effective_mode,
-            classifier_label=classifier_label,
-            dataset_terms_found=dataset_terms_found,
-            used_retrieval=used_retrieval,
+            classifier_label="forced:dataset_qa",
+            used_retrieval=True,
         )
         df_load, filtered_load = _load_intelligence_desk_df_by_scope(current_scope, state, ROOT)
-        spinner_text = "Thinking..." if effective_mode == INTEL_MODE_AI_GENERAL else "Analysing data..."
-        with st.spinner(spinner_text):
+        with st.spinner("Analysing data..."):
             out = answer_intelligence_desk(
                 user_text,
                 effective_mode,
                 df_load,
                 filtered_load,
-                requested_mode=selected_mode,
+                requested_mode=effective_mode,
                 source_scope=current_scope,
                 resolution=None,
             )
+        # Override insufficient-context answers with a clean safe message
+        if out.get("error") in ("not_dataset_question", "insufficient_context", "empty_df"):
+            out["answer"] = "I couldn't find enough relevant internal data to answer that question. Try rephrasing with specific metrics (AUM, NNB, flows) or choosing a broader data scope."
+            out["grounded"] = False
         answer_text = (out.get("answer") or "").strip() or "No response returned."
         result_mode = out.get("resolved_mode", effective_mode)
         subset_result = out.get("subset_df")
         is_grounded_result = (
             isinstance(subset_result, pd.DataFrame) and not subset_result.empty
-            and (result_mode in INTEL_INTERNAL_MODES or out.get("grounded"))
+            and result_mode in INTEL_INTERNAL_MODES
         )
         if is_grounded_result:
             st.session_state[INTEL_LAST_SUBSET_DF_KEY] = subset_result
         else:
             st.session_state[INTEL_LAST_SUBSET_DF_KEY] = pd.DataFrame()
         out["answer"] = answer_text
+        # Log result
         _log_intel_event(
-            user_text, selected_mode,
+            user_text, effective_mode,
             resolved_mode=result_mode,
-            classifier_label=classifier_label,
-            dataset_terms_found=dataset_terms_found,
-            used_retrieval=used_retrieval,
+            classifier_label="forced:dataset_qa",
+            used_retrieval=True,
             grounded=bool(out.get("grounded")),
             error=out.get("error"),
         )
